@@ -270,10 +270,10 @@ export const Billing: React.FC<BillingProps> = ({ plans = [], userPlanName = 'Ba
 
                                     {/* RIGHT COLUMN: Details & Action */}
                                     <div className="space-y-6 flex flex-col">
-                                        {/* Method Details */}
-                                        <div className="bg-slate-50 rounded-xl p-5 border border-slate-200 flex-1">
+                                        {/* Method Details - Fixed Height to prevent jumping */}
+                                        <div className="bg-slate-50 rounded-xl p-5 border border-slate-200 h-[280px] flex flex-col justify-center relative">
                                             {paymentMethod === 'BANK' ? (
-                                                <div className="space-y-5 h-full flex flex-col justify-center">
+                                                <div className="space-y-5 w-full animate-in fade-in duration-300">
                                                     <div className="flex items-center justify-between border-b border-slate-200 pb-4">
                                                         <div className="flex items-center gap-3">
                                                             <img src="https://play-lh.googleusercontent.com/sykVTkZ6juW7CD1eeZCK1UTi1aDwr4tOQ6KRMuMimOsIZYsK9Rbxwhk-PGu3nA1iaoQ1=w240-h480-rw" alt="Bank Mandiri" className="w-12 h-12 rounded-lg object-contain bg-white shadow-sm border border-slate-100" />
@@ -292,13 +292,16 @@ export const Billing: React.FC<BillingProps> = ({ plans = [], userPlanName = 'Ba
                                                     </div>
                                                 </div>
                                             ) : (
-                                                <div className="flex flex-col items-center text-center justify-center h-full">
-                                                    <div className="bg-white p-3 rounded-xl border border-slate-200 mb-4 shadow-sm relative overflow-hidden">
-                                                         <img src="https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=1770020697923" alt="QRIS" className="w-40 h-40 mix-blend-multiply" />
+                                                <div className="flex flex-col items-center text-center justify-center w-full h-full animate-in fade-in duration-300 pt-2">
+                                                    <div className="bg-white p-1 rounded-xl border-2 border-slate-900 mb-3 shadow-lg relative overflow-hidden group cursor-zoom-in">
+                                                         <img 
+                                                            src="https://raw.githubusercontent.com/andiahmadnurmadani/fertinonvationImage/main/WhatsApp%20Image%202026-01-14%20at%2015.54.54.jpeg" 
+                                                            alt="QRIS" 
+                                                            className="w-48 h-48 object-cover scale-[1.35] group-hover:scale-[1.5] transition-transform duration-300" 
+                                                         />
                                                     </div>
-                                                    <p className="font-bold text-slate-900 text-sm">HOSTING KOLAB</p>
-                                                    <p className="text-xs text-slate-500 font-medium">BARANG DIGITAL</p>
-                                                    <p className="text-[10px] text-slate-400 mt-1 font-mono">NMID : ID1025465066435</p>
+                                                    <p className="font-bold text-slate-900 text-sm leading-tight">HOSTING KOLAB</p>
+                                                    <p className="text-[10px] text-slate-500 font-mono mt-0.5">NMID : ID1025465066435</p>
                                                 </div>
                                             )}
                                         </div>

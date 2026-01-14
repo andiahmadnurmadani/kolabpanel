@@ -6,136 +6,17 @@ const fs = require('fs');
 const path = require('path');
 const AdmZip = require('adm-zip');
 
-// Load env deterministically from server/.env (override any existing env vars)
-require('./loadEnv').loadEnv();
-
-// DB must be required after env is loaded
-const db = require('./db');
-
 const app = express();
-const PORT = process.env.PORT || 5000;
-const SECRET_KEY = process.env.JWT_SECRET;
+const PORT = 5000;
+const SECRET_KEY = 'kolab_secret_key_change_this_in_prod';
 
 // --- CONFIGURATION ---
-const normalizeWindowsPath = (raw) => {
-    if (!raw) return raw;
-    let value = String(raw).trim();
+const STORAGE_ROOT = 'D:\\KolabPanel'; // Root directory for all user projects
+const UPLOAD_TEMP = 'uploads/'; // Temp folder for zips
 
-    // Strip wrapping quotes
-    if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
-        value = value.slice(1, -1);
-    }
-
-    // Convert //server/share -> \\server\share for Windows UNC
-    if (value.startsWith('//')) {
-        value = `\\\\${value.slice(2).replace(/\//g, '\\')}`;
-    }
-
-    // Handle drive-relative paths like X:folder -> X:\folder
-    if (/^[A-Za-z]:[^\\/]/.test(value)) {
-        value = `${value[0]}:${path.win32.sep}${value.slice(2)}`;
-    }
-
-    return value;
-};
-
-const resolveEnvPath = (raw) => {
-    const normalized = normalizeWindowsPath(raw);
-    return path.resolve(normalized);
-};
-
-const STORAGE_ROOT = process.env.STORAGE_ROOT
-    ? resolveEnvPath(process.env.STORAGE_ROOT)
-    : path.resolve(__dirname, '..', 'userdata');
-
-const UPLOAD_TEMP = process.env.UPLOAD_TEMP
-    ? resolveEnvPath(process.env.UPLOAD_TEMP)
-    : path.resolve(__dirname, 'uploads');
-
-const ensureWritableDirSync = (dirPath) => {
-    fs.mkdirSync(dirPath, { recursive: true });
-    const probe = path.join(dirPath, `.write_test_${Date.now()}_${Math.random().toString(16).slice(2)}`);
-    fs.writeFileSync(probe, 'ok');
-    fs.unlinkSync(probe);
-};
-
-try {
-    ensureWritableDirSync(STORAGE_ROOT);
-    ensureWritableDirSync(UPLOAD_TEMP);
-} catch (e) {
-    console.error('[storage] Storage path is not writable:', e.message);
-    console.error('[storage] STORAGE_ROOT=', process.env.STORAGE_ROOT);
-    console.error('[storage] UPLOAD_TEMP=', process.env.UPLOAD_TEMP);
-    process.exit(1);
-}
-
-console.log('[storage] STORAGE_ROOT resolved =', STORAGE_ROOT);
-console.log('[storage] UPLOAD_TEMP resolved =', UPLOAD_TEMP);
-
-const DEPLOY_RETRY_COUNT = 5;
-const DEPLOY_RETRY_BASE_DELAY_MS = 300;
-
-const safeRm = async (targetPath) => {
-    try {
-        await fs.promises.rm(targetPath, { recursive: true, force: true });
-    } catch {
-        // ignore
-    }
-};
-
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-
-const isTransientFsError = (err) => {
-    const code = err && err.code;
-    // Network shares / Windows can surface transient issues as these codes
-    return [
-        'EPERM',
-        'EACCES',
-        'EBUSY',
-        'ETIMEDOUT',
-        'EIO',
-        'ENETUNREACH',
-        'ECONNRESET',
-        'ENOTEMPTY'
-    ].includes(code);
-};
-
-const withRetries = async (fn) => {
-    let lastErr;
-    for (let attempt = 0; attempt <= DEPLOY_RETRY_COUNT; attempt += 1) {
-        try {
-            return await fn();
-        } catch (e) {
-            lastErr = e;
-            if (attempt >= DEPLOY_RETRY_COUNT || !isTransientFsError(e)) throw e;
-            const jitter = Math.floor(Math.random() * 100);
-            const delay = Math.min(5000, DEPLOY_RETRY_BASE_DELAY_MS * (2 ** attempt) + jitter);
-            await sleep(delay);
-        }
-    }
-    throw lastErr;
-};
-
-// --- DATABASE INITIALIZATION ---
-const initDB = async () => {
-  try {
-    const schemaPath = path.join(__dirname, 'schema.sql');
-    const schemaSql = fs.readFileSync(schemaPath, 'utf8');
-    
-    // Split queries strictly if needed, but multipleStatements: true handles most cases.
-    // However, executing a large block is safer with pool.query vs pool.execute for multiple statements
-    const connection = await db.getConnection();
-    try {
-        await connection.query(schemaSql);
-        console.log('Database initialized successfully (tables checked/created).');
-    } finally {
-        connection.release();
-    }
-  } catch (err) {
-    console.error('Database initialization failed:', err.message);
-    // Don't exit process, maybe DB isn't ready yet, but log error
-  }
-};
+// Ensure root directories exist
+if (!fs.existsSync(STORAGE_ROOT)) fs.mkdirSync(STORAGE_ROOT, { recursive: true });
+if (!fs.existsSync(UPLOAD_TEMP)) fs.mkdirSync(UPLOAD_TEMP, { recursive: true });
 
 // Middleware
 app.use(cors());
@@ -148,18 +29,43 @@ const storage = multer.diskStorage({
 });
 const upload = multer({ storage });
 
-// Security: Prevent Directory Traversal
-const getSafePath = async (userId, siteName, relativePath) => {
-    const [users] = await db.execute('SELECT username FROM users WHERE id = ?', [userId]);
-    if (users.length === 0) return null;
-    const username = users[0].username;
+// --- IN-MEMORY DATABASE (Metadata only) ---
+let users = [
+  { id: 'u1', username: 'demo_user', password: 'password', email: 'user@example.com', role: 'USER', plan: 'Basic', avatar: 'https://picsum.photos/200', status: 'ACTIVE' },
+  { id: 'a1', username: 'sys_admin', password: 'admin', email: 'admin@kolabpanel.com', role: 'ADMIN', plan: 'Premium', avatar: 'https://picsum.photos/201', status: 'ACTIVE' }
+];
 
-    const userDir = path.join(STORAGE_ROOT, username);
+let sites = [
+  // Example metadata, files will be checked from disk
+];
+
+let plans = [
+    { id: 'plan_basic', name: 'Basic', price: 0, currency: 'Rp', features: ['1 Site', '100MB Storage', 'Shared Database'], limits: { sites: 1, storage: 100, databases: 0 }, isPopular: false },
+    { id: 'plan_pro', name: 'Pro', price: 50000, currency: 'Rp', features: ['5 Sites', '1GB Storage', 'Private Database'], limits: { sites: 5, storage: 1024, databases: 1 }, isPopular: true },
+    { id: 'plan_premium', name: 'Premium', price: 100000, currency: 'Rp', features: ['Unlimited Sites', '10GB Storage'], limits: { sites: 9999, storage: 10240, databases: 5 }, isPopular: false }
+];
+
+let domains = [
+    { id: 'd1', name: 'kolabpanel.com', isPrimary: true }
+];
+
+let payments = [];
+
+// Helper functions
+const findUser = (username, password) => users.find(u => u.username === username && u.password === password);
+const findUserById = (id) => users.find(u => u.id === id);
+
+// Security: Prevent Directory Traversal
+const getSafePath = (userId, siteName, relativePath) => {
+    // Structure: D:\KolabPanel\username\siteName\relativePath
+    const user = findUserById(userId);
+    if (!user) return null;
+
+    const userDir = path.join(STORAGE_ROOT, user.username);
     const siteDir = path.join(userDir, siteName);
-    const safePath = path.resolve(siteDir, (relativePath || '/').replace(/^\/+/g, '')); 
+    const safePath = path.resolve(siteDir, relativePath.replace(/^\/+/g, '')); // Remove leading slashes
 
     // Ensure the resolved path is still inside the site directory
-    // Note: If relativePath is '/', safePath equals siteDir
     if (!safePath.startsWith(siteDir)) return null;
     
     return { fullPath: safePath, siteDir, userDir };
@@ -184,538 +90,217 @@ const getSiteSize = (dirPath) => {
 
 // --- ROUTES ---
 
-// 1. Auth
-app.post('/api/auth/login', async (req, res) => {
+// 1. Auth & Profiles (Standard)
+app.post('/api/auth/login', (req, res) => {
     const { username, password } = req.body;
-    try {
-        const [users] = await db.execute('SELECT * FROM users WHERE username = ?', [username]);
-        const user = users[0];
-        
-        if (user && user.password === password) {
-            const token = jwt.sign({ id: user.id, role: user.role }, SECRET_KEY, { expiresIn: '12h' });
-            const { password, ...u } = user;
-            res.json({ token, user: u });
-        } else {
-            res.status(401).json({ message: 'Invalid credentials' });
-        }
-    } catch (err) {
-        res.status(500).json({ message: err.message });
+    const user = findUser(username, password);
+    if (user) {
+        const token = jwt.sign({ id: user.id, role: user.role }, SECRET_KEY, { expiresIn: '1h' });
+        const { password, ...u } = user;
+        res.json({ token, user: u });
+    } else {
+        res.status(401).json({ message: 'Invalid credentials' });
     }
 });
 
-app.get('/api/auth/me', async (req, res) => {
+app.get('/api/auth/me', (req, res) => {
     const authHeader = req.headers.authorization;
     if (authHeader) {
         const token = authHeader.split(' ')[1];
-        jwt.verify(token, SECRET_KEY, async (err, userDecoded) => {
+        jwt.verify(token, SECRET_KEY, (err, userDecoded) => {
             if (err) return res.status(403).json({ message: 'Invalid Token' });
-            try {
-                const [users] = await db.execute('SELECT * FROM users WHERE id = ?', [userDecoded.id]);
-                if (users.length === 0) return res.status(404).json({ message: 'User not found' });
-                const { password, ...u } = users[0];
-                res.json(u);
-            } catch (e) {
-                res.status(500).json({ message: 'Server error' });
-            }
+            const user = findUserById(userDecoded.id);
+            if (!user) return res.status(404).json({ message: 'User not found' });
+            const { password, ...u } = user;
+            res.json(u);
         });
     } else {
         res.status(401).json({ message: 'Unauthorized' });
     }
 });
 
-app.post('/api/auth/change-password', async (req, res) => {
-    const { userId, current, newPass } = req.body;
-    try {
-        const [users] = await db.execute('SELECT password FROM users WHERE id = ?', [userId]);
-        if (users.length === 0) return res.status(404).json({ message: 'User not found' });
-        
-        if (users[0].password === current) {
-            await db.execute('UPDATE users SET password = ? WHERE id = ?', [newPass, userId]);
-            res.json({ success: true });
-        } else {
-            res.status(400).json({ message: 'Incorrect current password' });
-        }
-    } catch (err) {
-        res.status(500).json({ message: err.message });
+// 2. Sites & Deployment (With Real File System)
+app.get('/api/sites', (req, res) => {
+    const userId = req.query.userId;
+    if (userId) {
+        const user = findUserById(userId);
+        if(!user) return res.json([]);
+
+        // Sync metadata with real folders if needed, for now just return metadata
+        // Update storage usage dynamically
+        const userSites = sites.filter(s => s.userId === userId).map(site => {
+            const userDir = path.join(STORAGE_ROOT, user.username);
+            const siteDir = path.join(userDir, site.name); // Using name as folder name
+            const sizeBytes = getSiteSize(siteDir);
+            return { ...site, storageUsed: parseFloat((sizeBytes / (1024 * 1024)).toFixed(2)) };
+        });
+        res.json(userSites);
+    } else {
+        res.json(sites);
     }
 });
 
-app.put('/api/auth/profile', async (req, res) => {
-    const { id, ...data } = req.body;
-    // Construct query dynamically
-    const keys = Object.keys(data);
-    const values = Object.values(data);
-    if(keys.length === 0) return res.json({});
-
-    const setClause = keys.map(k => `${k} = ?`).join(', ');
-    
-    try {
-        await db.execute(`UPDATE users SET ${setClause} WHERE id = ?`, [...values, id]);
-        const [users] = await db.execute('SELECT * FROM users WHERE id = ?', [id]);
-        const { password, ...u } = users[0];
-        res.json(u);
-    } catch (err) {
-        res.status(500).json({ message: err.message });
-    }
-});
-
-// 2. Sites
-app.get('/api/sites', async (req, res) => {
-    const { userId } = req.query;
-    if (!userId) return res.status(400).json({ message: 'userId is required' });
-
-    try {
-        const [sites] = await db.execute('SELECT * FROM sites WHERE user_id = ? ORDER BY created_at DESC', [userId]);
-        const mapped = sites.map((s) => ({
-            id: s.id,
-            userId: s.user_id,
-            name: s.name,
-            subdomain: s.subdomain,
-            framework: s.framework,
-            status: s.status,
-            createdAt: s.created_at,
-            storageUsed: s.storage_used,
-            hasDatabase: !!s.has_database,
-        }));
-        res.json(mapped);
-    } catch (err) {
-        res.status(500).json({ message: err.message });
-    }
-});
-
-app.post('/api/sites/deploy', upload.single('file'), async (req, res) => {
-    const { userId, name, framework, subdomain, needsDatabase, attachedDatabaseId } = req.body;
+// DEPLOY ENDPOINT: Upload ZIP -> Extract to D:/KolabPanel/User/Site
+app.post('/api/sites/deploy', upload.single('file'), (req, res) => {
+    const { userId, name, framework, subdomain } = req.body;
     const file = req.file;
 
-    if (!userId || !name || !framework || !subdomain) {
-        return res.status(400).json({ message: 'Missing required fields' });
-    }
+    if (!file) return res.status(400).json({ message: 'No file uploaded' });
+
+    const user = findUserById(userId);
+    if (!user) return res.status(404).json({ message: 'User not found' });
+
+    // 1. Prepare Paths
+    const userDir = path.join(STORAGE_ROOT, user.username);
+    const siteDir = path.join(userDir, name);
 
     try {
-        const [users] = await db.execute('SELECT username FROM users WHERE id = ?', [userId]);
-        if (users.length === 0) return res.status(404).json({ message: 'User not found' });
-        const username = users[0].username;
-
-        const userDir = path.join(STORAGE_ROOT, username);
-        const finalSiteDir = path.join(userDir, name);
-
-        // Extract directly to mapped volume with retry
-        let extractSuccess = false;
-        let retryCount = 0;
-
-        while (!extractSuccess && retryCount <= DEPLOY_RETRY_COUNT) {
-            try {
-                // Clean up any partial extraction from previous failed attempt
-                await safeRm(finalSiteDir);
-                
-                // Create user directory
-                await withRetries(() => fs.promises.mkdir(userDir, { recursive: true }));
-                
-                // Create site directory
-                await withRetries(() => fs.promises.mkdir(finalSiteDir, { recursive: true }));
-
-                // Extract ZIP directly to final location
-                if (file && file.path) {
-                    const zip = new AdmZip(file.path);
-                    await withRetries(() => {
-                        zip.extractAllTo(finalSiteDir, true);
-                    });
-                    await safeRm(file.path);
-                } else {
-                    await withRetries(() => 
-                        fs.promises.writeFile(path.join(finalSiteDir, 'index.html'), '<h1>Hello World</h1>')
-                    );
-                }
-
-                extractSuccess = true;
-            } catch (err) {
-                console.warn(`[deploy] Attempt ${retryCount + 1}/${DEPLOY_RETRY_COUNT + 1} failed:`, err.message);
-                retryCount += 1;
-                
-                if (retryCount > DEPLOY_RETRY_COUNT) {
-                    // Clean up failed extraction
-                    await safeRm(finalSiteDir);
-                    if (file && file.path) await safeRm(file.path);
-                    throw new Error(`Deployment failed after ${DEPLOY_RETRY_COUNT + 1} attempts: ${err.message}`);
-                }
-
-                // Wait before retry
-                const jitter = Math.floor(Math.random() * 100);
-                const delay = Math.min(5000, DEPLOY_RETRY_BASE_DELAY_MS * (2 ** retryCount) + jitter);
-                await sleep(delay);
-            }
+        // 2. Create Directories
+        if (!fs.existsSync(userDir)) fs.mkdirSync(userDir, { recursive: true });
+        if (fs.existsSync(siteDir)) {
+             // Cleanup old site version if exists (simple overwrite logic)
+             fs.rmSync(siteDir, { recursive: true, force: true });
         }
+        fs.mkdirSync(siteDir, { recursive: true });
 
-        // Save to database
-        const hasDb = needsDatabase === 'true' || !!attachedDatabaseId;
-        const siteId = `s_${Date.now()}`;
+        // 3. Extract Zip
+        const zip = new AdmZip(file.path);
+        zip.extractAllTo(siteDir, true);
 
-        if (attachedDatabaseId) {
-            await db.execute('DELETE FROM sites WHERE id = ?', [attachedDatabaseId]);
-        }
+        // 4. Cleanup Temp Zip
+        fs.unlinkSync(file.path);
 
-        const status = 'ACTIVE';
-        await db.execute(
-            'INSERT INTO sites (id, user_id, name, subdomain, framework, status, storage_used, has_database) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-            [siteId, userId, name, subdomain, framework, status, 15, hasDb]
-        );
-
-        const site = {
-            id: siteId,
+        // 5. Save Metadata
+        const newSite = {
+            id: `s${Date.now()}`,
             userId,
-            name,
-            subdomain,
+            name, // Folder name
             framework,
-            status,
-            createdAt: new Date(),
-            storageUsed: 15,
-            hasDatabase: hasDb,
+            subdomain,
+            status: 'ACTIVE',
+            createdAt: new Date().toISOString().split('T')[0],
+            storageUsed: 0
         };
+        sites.push(newSite);
 
-        res.json(site);
+        res.json(newSite);
     } catch (err) {
-        console.error('[deploy] Error:', err);
-        res.status(500).json({ message: err.message || 'Deployment failed' });
+        console.error("Deploy Error:", err);
+        res.status(500).json({ message: 'Deployment failed: ' + err.message });
     }
 });
 
-app.delete('/api/sites/:id', async (req, res) => {
-    const { id } = req.params;
-    const { deleteDb } = req.body;
-
-    try {
-        const [sites] = await db.execute('SELECT * FROM sites WHERE id = ?', [id]);
-        if (sites.length === 0) return res.status(404).json({ message: 'Site not found' });
-        const site = sites[0];
-
-        // Delete files with retry mechanism
-        const pathInfo = await getSafePath(site.user_id, site.name, '/');
-        if (pathInfo && fs.existsSync(pathInfo.fullPath)) {
-            let deleteSuccess = false;
-            let retryCount = 0;
-
-            while (!deleteSuccess && retryCount <= DEPLOY_RETRY_COUNT) {
-                try {
-                    await withRetries(() => fs.promises.rm(pathInfo.fullPath, { recursive: true, force: true }));
-                    deleteSuccess = true;
-                } catch (err) {
-                    console.warn(`[delete] Attempt ${retryCount + 1}/${DEPLOY_RETRY_COUNT + 1} failed:`, err.message);
-                    retryCount += 1;
-                    
-                    if (retryCount > DEPLOY_RETRY_COUNT) {
-                        throw new Error(`Failed to delete site files after ${DEPLOY_RETRY_COUNT + 1} attempts: ${err.message}`);
-                    }
-
-                    const jitter = Math.floor(Math.random() * 100);
-                    const delay = Math.min(5000, DEPLOY_RETRY_BASE_DELAY_MS * (2 ** retryCount) + jitter);
-                    await sleep(delay);
-                }
-            }
-        }
-
-        if (deleteDb) {
-            await db.execute('DELETE FROM sites WHERE id = ?', [id]);
-        } else {
-            await db.execute('UPDATE sites SET status = ?, storage_used = 0 WHERE id = ?', ['DB_ONLY', id]);
-        }
-        
-        res.json({ success: true });
-    } catch (err) {
-        console.error('[delete] Error:', err);
-        res.status(500).json({ message: err.message || 'Delete failed' });
-    }
-});
-
-app.put('/api/sites/:id', async (req, res) => {
-    // Only status update mostly
-    const { id } = req.params;
-    const data = req.body;
-    const keys = Object.keys(data);
-    const values = Object.values(data);
-    if(keys.length === 0) return res.json({});
-    
-    // Map camcelCase to snake_case for DB
-    const colMap = { 'storageUsed': 'storage_used', 'hasDatabase': 'has_database' };
-    const setClause = keys.map(k => `${colMap[k] || k} = ?`).join(', ');
-
-    try {
-        await db.execute(`UPDATE sites SET ${setClause} WHERE id = ?`, [...values, id]);
-        res.json({ success: true });
-    } catch (err) {
-        res.status(500).json({ message: err.message });
-    }
-});
-
-// 3. Files
-app.get('/api/files', async (req, res) => {
+// 3. File Manager API (Real FS)
+app.get('/api/files', (req, res) => {
     const { siteId, path: relPath } = req.query;
+    const site = sites.find(s => s.id === siteId);
+    
+    if (!site) return res.status(404).json({ message: 'Site not found' });
+
+    const pathInfo = getSafePath(site.userId, site.name, relPath || '/');
+    if (!pathInfo) return res.status(403).json({ message: 'Access denied' });
+
+    if (!fs.existsSync(pathInfo.fullPath)) {
+        return res.json([]); // Empty if path doesn't exist yet
+    }
+
     try {
-        const [sites] = await db.execute('SELECT * FROM sites WHERE id = ?', [siteId]);
-        if (sites.length === 0) return res.status(404).json({ message: 'Site not found' });
-        const site = sites[0];
-
-        const pathInfo = await getSafePath(site.user_id, site.name, relPath || '/');
-        if (!pathInfo) return res.status(403).json({ message: 'Access denied' });
-
-        if (!fs.existsSync(pathInfo.fullPath)) return res.json([]);
-
         const dirents = fs.readdirSync(pathInfo.fullPath, { withFileTypes: true });
         const files = dirents.map(dirent => {
             const stats = fs.statSync(path.join(pathInfo.fullPath, dirent.name));
             return {
-                id: `${relPath}-${dirent.name}`,
+                id: `${relPath}-${dirent.name}`, // unique-ish id
                 name: dirent.name,
                 type: dirent.isDirectory() ? 'folder' : 'file',
-                size: dirent.isDirectory() ? '-' : (stats.size / 1024).toFixed(2) + ' KB',
-                path: relPath || '/',
+                size: dirent.isDirectory() ? '-' : (stats.size > 1024 * 1024 ? (stats.size / (1024*1024)).toFixed(2) + ' MB' : (stats.size / 1024).toFixed(2) + ' KB'),
+                path: relPath === '/' ? '/' : relPath, // Parent path
                 createdAt: stats.birthtime.toISOString()
             };
         });
         res.json(files);
     } catch (err) {
-        res.status(500).json({ message: err.message });
+        res.status(500).json({ message: 'Error reading directory' });
     }
 });
 
-app.post('/api/files/folder', async (req, res) => {
+app.post('/api/files/folder', (req, res) => {
     const { siteId, path: relPath, folderName } = req.body;
-    try {
-        const [sites] = await db.execute('SELECT * FROM sites WHERE id = ?', [siteId]);
-        if (sites.length === 0) return res.status(404).json({ message: 'Site not found' });
-        const site = sites[0];
+    const site = sites.find(s => s.id === siteId);
+    if (!site) return res.status(404).json({ message: 'Site not found' });
 
-        const pathInfo = await getSafePath(site.user_id, site.name, relPath);
-        const newFolderPath = path.join(pathInfo.fullPath, folderName);
-        
-        if (!fs.existsSync(newFolderPath)) {
-            fs.mkdirSync(newFolderPath);
-            res.json({ success: true });
-        } else {
-            res.status(400).json({ message: 'Folder exists' });
-        }
-    } catch(err) { res.status(500).json({ message: err.message }); }
-});
+    const pathInfo = getSafePath(site.userId, site.name, relPath);
+    const newFolderPath = path.join(pathInfo.fullPath, folderName);
 
-app.post('/api/files/upload', upload.single('file'), async (req, res) => {
-     const { siteId, path: relPath } = req.body;
-     const file = req.file;
-     if (!file) return res.status(400).json({ message: 'No file' });
-
-     try {
-        const [sites] = await db.execute('SELECT * FROM sites WHERE id = ?', [siteId]);
-        if (sites.length === 0) return res.status(404).json({ message: 'Site not found' });
-        const site = sites[0];
-
-        const pathInfo = await getSafePath(site.user_id, site.name, relPath);
-        const destPath = path.join(pathInfo.fullPath, file.originalname);
-        
-        fs.renameSync(file.path, destPath);
+    if (!fs.existsSync(newFolderPath)) {
+        fs.mkdirSync(newFolderPath);
         res.json({ success: true });
-     } catch(err) { res.status(500).json({ message: err.message }); }
-});
-
-app.put('/api/files/rename', async (req, res) => {
-    const { siteId, path: relPath, oldName, newName } = req.body;
-    try {
-        const [sites] = await db.execute('SELECT * FROM sites WHERE id = ?', [siteId]);
-        const site = sites[0];
-        const pathInfo = await getSafePath(site.user_id, site.name, relPath);
-        const oldP = path.join(pathInfo.fullPath, oldName);
-        const newP = path.join(pathInfo.fullPath, newName);
-        if(fs.existsSync(oldP)) {
-            fs.renameSync(oldP, newP);
-            res.json({success:true});
-        } else {
-            res.status(404).json({message: 'File not found'});
-        }
-    } catch(err) { res.status(500).json({ message: err.message }); }
-});
-
-app.delete('/api/files', async (req, res) => {
-    const { siteId, path: relPath, name } = req.body;
-    // Note: DELETE with body is unusual but express supports it
-    try {
-        const [sites] = await db.execute('SELECT * FROM sites WHERE id = ?', [siteId]);
-        const site = sites[0];
-        const pathInfo = await getSafePath(site.user_id, site.name, relPath);
-        const p = path.join(pathInfo.fullPath, name);
-        if(fs.existsSync(p)) {
-            fs.rmSync(p, { recursive: true, force: true });
-            res.json({success:true});
-        } else {
-             res.status(404).json({message: 'File not found'});
-        }
-    } catch(err) { res.status(500).json({ message: err.message }); }
-});
-
-// 4. Admin API
-app.get('/api/admin/stats', async (req, res) => {
-    const [[{count: totalUsers}]] = await db.execute('SELECT COUNT(*) as count FROM users');
-    const [[{count: totalSites}]] = await db.execute('SELECT COUNT(*) as count FROM sites');
-    res.json({ totalUsers, totalSites, activeRevenue: '0' });
-});
-
-app.get('/api/admin/users', async (req, res) => {
-    const [users] = await db.execute('SELECT id, username, email, role, plan, avatar, status FROM users');
-    res.json(users);
-});
-
-app.put('/api/admin/users/:id/toggle', async (req, res) => {
-    const { id } = req.params;
-    const [users] = await db.execute('SELECT status FROM users WHERE id = ?', [id]);
-    if(users.length) {
-        const newStatus = users[0].status === 'ACTIVE' ? 'SUSPENDED' : 'ACTIVE';
-        await db.execute('UPDATE users SET status = ? WHERE id = ?', [newStatus, id]);
-        res.json({ status: newStatus });
     } else {
-        res.status(404).json({ message: 'User not found' });
+        res.status(400).json({ message: 'Folder already exists' });
     }
 });
 
-app.get('/api/admin/payments', async (req, res) => {
-    const [payments] = await db.execute(`
-        SELECT p.*, u.username 
-        FROM payments p 
-        LEFT JOIN users u ON p.user_id = u.id
-    `);
-    // Map snake_case to camelCase for frontend
-    const mapped = payments.map(p => ({
-        ...p,
-        userId: p.user_id,
-        proofUrl: p.proof_url
-    }));
-    res.json(mapped);
+app.post('/api/files/upload', upload.single('file'), (req, res) => {
+    const { siteId, path: relPath } = req.body;
+    const file = req.file;
+    const site = sites.find(s => s.id === siteId);
+    
+    if (!site || !file) return res.status(400).json({ message: 'Missing data' });
+
+    const pathInfo = getSafePath(site.userId, site.name, relPath);
+    const destPath = path.join(pathInfo.fullPath, file.originalname);
+
+    // Move from temp to destination
+    fs.renameSync(file.path, destPath);
+    res.json({ success: true });
 });
 
-app.put('/api/admin/payments/:id/verify', async (req, res) => {
-    const { id } = req.params;
-    const { status } = req.body;
-    
-    await db.execute('UPDATE payments SET status = ? WHERE id = ?', [status, id]);
-    
-    if (status === 'VERIFIED') {
-        const [payments] = await db.execute('SELECT * FROM payments WHERE id = ?', [id]);
-        if(payments.length) {
-            await db.execute('UPDATE users SET plan = ? WHERE id = ?', [payments[0].plan, payments[0].user_id]);
-        }
+app.delete('/api/files', (req, res) => {
+    const { siteId, path: relPath, name } = req.body;
+    const site = sites.find(s => s.id === siteId);
+    if (!site) return res.status(404).json({ message: 'Site not found' });
+
+    const pathInfo = getSafePath(site.userId, site.name, relPath);
+    const itemPath = path.join(pathInfo.fullPath, name);
+
+    if (fs.existsSync(itemPath)) {
+        fs.rmSync(itemPath, { recursive: true, force: true });
+        res.json({ success: true });
+    } else {
+        res.status(404).json({ message: 'File not found' });
     }
-    const [updated] = await db.execute('SELECT * FROM payments WHERE id = ?', [id]);
-    res.json({...updated[0], userId: updated[0].user_id, proofUrl: updated[0].proof_url});
 });
 
-// 5. Support
-app.post('/api/tickets', async (req, res) => {
-    const { userId, username, subject } = req.body;
-    const id = `t_${Date.now()}`;
-    await db.execute('INSERT INTO tickets (id, user_id, subject) VALUES (?, ?, ?)', [id, userId, subject]);
-    res.json({ id, userId, username, subject, status: 'OPEN', createdAt: new Date() });
-});
+app.put('/api/files/rename', (req, res) => {
+    const { siteId, path: relPath, oldName, newName } = req.body;
+    const site = sites.find(s => s.id === siteId);
+    if (!site) return res.status(404).json({ message: 'Site not found' });
 
-app.get('/api/tickets', async (req, res) => {
-    const { userId } = req.query;
-    let query = `
-        SELECT t.id, t.user_id as userId, u.username, t.subject, t.status, t.created_at as createdAt, t.last_message_at as lastMessageAt
-        FROM tickets t
-        LEFT JOIN users u ON t.user_id = u.id
-    `;
-    let params = [];
-    if (userId) {
-        query += ' WHERE t.user_id = ?';
-        params.push(userId);
+    const pathInfo = getSafePath(site.userId, site.name, relPath);
+    const oldPath = path.join(pathInfo.fullPath, oldName);
+    const newPath = path.join(pathInfo.fullPath, newName);
+
+    if (fs.existsSync(oldPath)) {
+        fs.renameSync(oldPath, newPath);
+        res.json({ success: true });
+    } else {
+        res.status(404).json({ message: 'File not found' });
     }
-    query += ' ORDER BY t.last_message_at DESC';
-    const [tickets] = await db.execute(query, params);
-    res.json(tickets);
 });
 
-app.get('/api/tickets/:id/messages', async (req, res) => {
-    const { id } = req.params;
-    const [msgs] = await db.execute('SELECT id, ticket_id as ticketId, sender_id as senderId, text, timestamp, is_admin as isAdmin FROM messages WHERE ticket_id = ? ORDER BY timestamp ASC', [id]);
-    
-    // Fetch sender names
-    const enriched = await Promise.all(msgs.map(async m => {
-        const [u] = await db.execute('SELECT username FROM users WHERE id = ?', [m.senderId]);
-        return { ...m, senderName: u[0] ? u[0].username : 'Unknown', isAdmin: !!m.isAdmin };
-    }));
-    res.json(enriched);
-});
-
-app.post('/api/tickets/:id/messages', async (req, res) => {
-    const { id } = req.params;
-    const { senderId, text, isAdmin } = req.body;
-    const msgId = `m_${Date.now()}`;
-    
-    await db.execute(
-        'INSERT INTO messages (id, ticket_id, sender_id, text, is_admin) VALUES (?, ?, ?, ?, ?)',
-        [msgId, id, senderId, text, isAdmin]
-    );
-    await db.execute('UPDATE tickets SET last_message_at = NOW() WHERE id = ?', [id]);
-    
-    const [u] = await db.execute('SELECT username FROM users WHERE id = ?', [senderId]);
-    
+// 4. Admin (Standard In-Memory)
+app.get('/api/admin/stats', (req, res) => {
     res.json({
-        id: msgId, ticketId: id, senderId, 
-        senderName: u[0] ? u[0].username : 'Unknown', 
-        text, timestamp: new Date(), isAdmin
+        totalUsers: users.length,
+        totalSites: sites.length,
+        activeRevenue: '4.2M'
     });
 });
+app.get('/api/admin/users', (req, res) => res.json(users.map(({password, ...u}) => u)));
+app.get('/api/admin/payments', (req, res) => res.json(payments));
+app.get('/api/plans', (req, res) => res.json(plans));
+app.get('/api/domains', (req, res) => res.json(domains));
 
-app.put('/api/tickets/:id/close', async (req, res) => {
-    const { id } = req.params;
-    await db.execute('UPDATE tickets SET status = ? WHERE id = ?', ['CLOSED', id]);
-    res.json({ success: true });
-});
-
-// 6. Plans & Domains
-app.get('/api/plans', async (req, res) => {
-    const [plans] = await db.execute('SELECT * FROM plans');
-    res.json(plans);
-});
-
-app.post('/api/plans', async (req, res) => {
-    const plan = req.body;
-    const id = `p_${Date.now()}`;
-    await db.execute(
-        'INSERT INTO plans (id, name, price, currency, features, limits, is_popular) VALUES (?, ?, ?, ?, ?, ?, ?)',
-        [id, plan.name, plan.price, plan.currency, JSON.stringify(plan.features), JSON.stringify(plan.limits), plan.isPopular]
-    );
-    res.json({ ...plan, id });
-});
-
-app.put('/api/plans/:id', async (req, res) => {
-    const { id } = req.params;
-    const plan = req.body;
-    // Simplification: Update fields
-    await db.execute(
-        'UPDATE plans SET name=?, price=?, currency=?, features=?, limits=?, is_popular=? WHERE id=?',
-        [plan.name, plan.price, plan.currency, JSON.stringify(plan.features), JSON.stringify(plan.limits), plan.isPopular, id]
-    );
-    res.json({ ...plan, id });
-});
-
-app.delete('/api/plans/:id', async (req, res) => {
-    await db.execute('DELETE FROM plans WHERE id = ?', [req.params.id]);
-    res.json({ success: true });
-});
-
-app.get('/api/domains', async (req, res) => {
-    const [domains] = await db.execute('SELECT id, name, is_primary as isPrimary FROM domains');
-    res.json(domains);
-});
-
-app.post('/api/domains', async (req, res) => {
-    const { name } = req.body;
-    const id = `d_${Date.now()}`;
-    await db.execute('INSERT INTO domains (id, name) VALUES (?, ?)', [id, name]);
-    res.json({ id, name, isPrimary: false });
-});
-
-app.delete('/api/domains/:id', async (req, res) => {
-    await db.execute('DELETE FROM domains WHERE id = ?', [req.params.id]);
-    res.json({ success: true });
-});
-
-app.listen(PORT, async () => {
-    await initDB();
+app.listen(PORT, () => {
     console.log(`KolabPanel API running on http://localhost:${PORT}`);
+    console.log(`Storage Root: ${STORAGE_ROOT}`);
 });

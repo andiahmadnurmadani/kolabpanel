@@ -2,13 +2,18 @@ import React, { useState, useEffect, useRef } from 'react';
 import { Card, StatusBadge } from '../../components/Shared';
 import { api } from '../../services/api';
 import { SupportTicket, ChatMessage } from '../../types';
-import { Send, MessageSquare } from 'lucide-react';
+import { Send, MessageSquare, Lock, Ban, AlertTriangle, Loader2, CheckCircle2, Clock } from 'lucide-react';
 
 export const AdminSupport: React.FC = () => {
     const [tickets, setTickets] = useState<SupportTicket[]>([]);
     const [selectedTicketId, setSelectedTicketId] = useState<string | null>(null);
     const [messages, setMessages] = useState<ChatMessage[]>([]);
     const [newMessage, setNewMessage] = useState('');
+    
+    // Close Ticket State
+    const [ticketToClose, setTicketToClose] = useState<string | null>(null);
+    const [isClosing, setIsClosing] = useState(false);
+
     const chatEndRef = useRef<HTMLDivElement>(null);
 
     useEffect(() => {
@@ -45,34 +50,74 @@ export const AdminSupport: React.FC = () => {
         setNewMessage('');
     };
 
-    const handleCloseTicket = async () => {
-        if (selectedTicketId && confirm("Close this ticket?")) {
-            await api.tickets.close(selectedTicketId);
-            loadTickets(); // Refresh status
+    const initiateCloseTicket = () => {
+        if (selectedTicketId) {
+            setTicketToClose(selectedTicketId);
+        }
+    };
+
+    const confirmCloseTicket = async () => {
+        if (!ticketToClose) return;
+        
+        setIsClosing(true);
+        try {
+            await api.tickets.close(ticketToClose);
+            // Update local state immediately without full reload
+            setTickets(prev => prev.map(t => 
+                t.id === ticketToClose ? { ...t, status: 'CLOSED' } : t
+            ));
+            setTicketToClose(null);
+        } catch (e) {
+            alert("Failed to close ticket");
+        } finally {
+            setIsClosing(false);
         }
     }
 
     const selectedTicket = tickets.find(t => t.id === selectedTicketId);
 
+    // Helper to get class for ticket item based on status & selection
+    const getTicketItemClass = (ticket: SupportTicket, isSelected: boolean) => {
+        const baseClass = "p-3 rounded-lg border cursor-pointer transition-all relative overflow-hidden";
+        
+        if (isSelected) {
+            return `${baseClass} bg-indigo-50 border-indigo-200 ring-1 ring-indigo-200 shadow-sm z-10`;
+        }
+        
+        if (ticket.status === 'CLOSED') {
+            return `${baseClass} bg-slate-50 border-slate-100 opacity-70 hover:opacity-100 hover:border-slate-300 grayscale-[0.3]`;
+        }
+        
+        return `${baseClass} bg-white border-slate-200 hover:border-indigo-300 hover:shadow-sm`;
+    };
+
     return (
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-6 h-[calc(100vh-140px)] animate-in fade-in duration-300">
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-6 h-[calc(100vh-140px)] animate-in fade-in duration-300 relative">
             {/* Ticket List */}
             <div className="md:col-span-1 flex flex-col gap-4">
                  <Card className="h-full flex flex-col">
-                     <h3 className="font-bold text-slate-800 mb-4">Incoming Tickets</h3>
+                     <h3 className="font-bold text-slate-800 mb-4 flex items-center gap-2">
+                        <MessageSquare className="w-5 h-5 text-indigo-600" />
+                        Incoming Tickets
+                     </h3>
                      <div className="flex-1 overflow-y-auto pr-2 space-y-2">
                          {tickets.map(ticket => (
                              <div 
                                 key={ticket.id}
                                 onClick={() => setSelectedTicketId(ticket.id)}
-                                className={`p-3 rounded-lg border cursor-pointer transition-all ${selectedTicketId === ticket.id ? 'bg-indigo-50 border-indigo-200 ring-1 ring-indigo-200' : 'bg-white border-slate-100 hover:border-slate-300'}`}
+                                className={getTicketItemClass(ticket, selectedTicketId === ticket.id)}
                              >
                                  <div className="flex justify-between items-start mb-1">
-                                     <span className="font-bold text-xs text-indigo-600 truncate uppercase">{ticket.username}</span>
+                                     <span className={`font-bold text-xs truncate uppercase ${selectedTicketId === ticket.id ? 'text-indigo-700' : 'text-slate-600'}`}>
+                                        {ticket.username}
+                                     </span>
                                      <StatusBadge status={ticket.status} />
                                  </div>
-                                 <div className="font-medium text-sm text-slate-800 truncate mb-1">{ticket.subject}</div>
-                                 <div className="text-xs text-slate-400">
+                                 <div className={`font-medium text-sm truncate mb-1 ${ticket.status === 'CLOSED' ? 'text-slate-500' : 'text-slate-800'}`}>
+                                     {ticket.subject}
+                                 </div>
+                                 <div className="flex items-center gap-1 text-[10px] text-slate-400">
+                                     <Clock className="w-3 h-3" />
                                      {new Date(ticket.lastMessageAt).toLocaleString()}
                                  </div>
                              </div>
@@ -91,13 +136,21 @@ export const AdminSupport: React.FC = () => {
                         <>
                             <div className="p-4 border-b border-slate-100 bg-slate-50/50 flex justify-between items-center">
                                 <div>
-                                    <h3 className="font-bold text-slate-800">{selectedTicket.subject}</h3>
+                                    <h3 className="font-bold text-slate-800 flex items-center gap-2">
+                                        {selectedTicket.subject}
+                                        {selectedTicket.status === 'CLOSED' && <Lock className="w-3.5 h-3.5 text-slate-400" />}
+                                    </h3>
                                     <p className="text-xs text-slate-500">User: {selectedTicket.username} | ID: {selectedTicket.id}</p>
                                 </div>
                                 <div className="flex items-center gap-2">
                                      <StatusBadge status={selectedTicket.status} />
                                      {selectedTicket.status === 'OPEN' && (
-                                         <button onClick={handleCloseTicket} className="text-xs px-2 py-1 bg-white border border-slate-300 rounded hover:bg-slate-100 text-slate-600">
+                                         <button 
+                                            onClick={initiateCloseTicket} 
+                                            className="text-xs px-3 py-1.5 bg-red-50 border border-red-200 rounded-lg hover:bg-red-100 text-red-600 font-medium flex items-center gap-1 transition-colors"
+                                            title="Mark as Resolved"
+                                         >
+                                             <CheckCircle2 className="w-3 h-3" />
                                              Close Ticket
                                          </button>
                                      )}
@@ -141,8 +194,9 @@ export const AdminSupport: React.FC = () => {
                                     </button>
                                 </form>
                             ) : (
-                                <div className="p-4 border-t border-slate-100 bg-slate-50 text-center text-sm text-slate-500">
-                                    This ticket is closed.
+                                <div className="p-4 border-t border-slate-100 bg-slate-100 flex items-center justify-center gap-2 text-sm text-slate-500 font-medium">
+                                    <Ban className="w-4 h-4" />
+                                    This ticket is closed. Re-open functionality not available in demo.
                                 </div>
                             )}
                         </>
@@ -154,6 +208,43 @@ export const AdminSupport: React.FC = () => {
                     )}
                 </Card>
             </div>
+
+            {/* Close Ticket Confirmation Modal */}
+            {ticketToClose && (
+                <div className="fixed inset-0 z-[60] flex items-center justify-center p-4">
+                    <div className="absolute inset-0 bg-slate-900/60 backdrop-blur-sm transition-opacity" onClick={() => !isClosing && setTicketToClose(null)} />
+                    <div className="relative w-full max-w-sm bg-white rounded-xl shadow-2xl p-6 animate-in fade-in zoom-in-95 duration-200">
+                        <div className="flex items-start gap-4">
+                            <div className="p-3 bg-red-100 rounded-full shrink-0">
+                                <AlertTriangle className="w-6 h-6 text-red-600" />
+                            </div>
+                            <div>
+                                <h3 className="text-lg font-bold text-slate-900">Close Ticket?</h3>
+                                <p className="text-sm text-slate-500 mt-1">
+                                    Are you sure you want to mark this ticket as resolved? The user will no longer be able to send messages.
+                                </p>
+                            </div>
+                        </div>
+                        <div className="mt-6 flex justify-end gap-3">
+                            <button 
+                                onClick={() => setTicketToClose(null)} 
+                                disabled={isClosing}
+                                className="px-4 py-2 text-slate-600 hover:bg-slate-50 rounded-lg font-medium text-sm transition-colors"
+                            >
+                                Cancel
+                            </button>
+                            <button 
+                                onClick={confirmCloseTicket} 
+                                disabled={isClosing}
+                                className="px-4 py-2 bg-red-600 text-white rounded-lg font-medium text-sm hover:bg-red-700 shadow-sm transition-colors flex items-center gap-2"
+                            >
+                                {isClosing && <Loader2 className="w-4 h-4 animate-spin" />}
+                                Close Ticket
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
         </div>
     );
 }

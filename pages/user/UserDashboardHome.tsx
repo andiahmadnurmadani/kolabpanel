@@ -132,7 +132,7 @@ export const UserDashboardHome: React.FC<DashboardProps> = ({ sites = [], user, 
         
         {/* Active Plan Card */}
         <div className="bg-gradient-to-br from-violet-600 to-indigo-600 p-6 rounded-xl shadow-lg text-white relative overflow-hidden group">
-            <div className="absolute -right-6 -top-6 text-white/10 rotate-12 transition-transform group-hover:scale-105 duration-500">
+            <div className="absolute -right-6 -bottom-6 text-white/10 rotate-12 transition-transform group-hover:scale-105 duration-500">
                 <Crown className="w-32 h-32" />
             </div>
             <div className="relative z-10 flex items-center justify-between mb-4">

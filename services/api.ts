@@ -1,78 +1,29 @@
-import { User, Site, HostingPlan, Domain, Payment, Framework, FileNode, UserRole, SiteStatus, PaymentStatus, SupportTicket, ChatMessage } from '../types';
+import { User, Site, HostingPlan, Domain, Payment, Framework, FileNode, SiteStatus, PaymentStatus, SupportTicket, ChatMessage } from '../types';
 import { getMockFiles } from '../constants';
-
-// --- LOCAL STORAGE HELPERS ---
-const DELAY = 600; // Simulate network latency (ms)
-
-const DB_KEYS = {
-    USERS: 'kp_users',
-    PASSWORDS: 'kp_passwords', // Store passwords separately
-    SITES: 'kp_sites',
-    FILES: 'kp_files',
-    PLANS: 'kp_plans',
-    DOMAINS: 'kp_domains',
-    PAYMENTS: 'kp_payments',
-    TICKETS: 'kp_tickets',
-    MESSAGES: 'kp_messages',
-    TOKEN: 'kp_token'
-};
-
-// Initial Data
-const INITIAL_USERS: User[] = [
-    { id: 'u1', username: 'demo_user', email: 'user@example.com', role: UserRole.USER, plan: 'Basic', avatar: 'https://picsum.photos/200', status: 'ACTIVE' },
-    { id: 'a1', username: 'sys_admin', email: 'admin@kolabpanel.com', role: UserRole.ADMIN, plan: 'Premium', avatar: 'https://picsum.photos/201', status: 'ACTIVE' }
-];
-
-const INITIAL_PASSWORDS: Record<string, string> = {
-    'u1': 'password',
-    'a1': 'admin'
-};
-
-const INITIAL_PLANS: HostingPlan[] = [
-    { id: 'plan_basic', name: 'Basic', price: 0, currency: 'Rp', features: ['1 Site', '100MB Storage', 'Shared Database'], limits: { sites: 1, storage: 100, databases: 0 }, isPopular: false },
-    { id: 'plan_pro', name: 'Pro', price: 50000, currency: 'Rp', features: ['5 Sites', '1GB Storage', 'Private Database'], limits: { sites: 5, storage: 1024, databases: 1 }, isPopular: true },
-    { id: 'plan_premium', name: 'Premium', price: 100000, currency: 'Rp', features: ['Unlimited Sites', '10GB Storage'], limits: { sites: 9999, storage: 10240, databases: 5 }, isPopular: false }
-];
-
-const INITIAL_DOMAINS: Domain[] = [
-    { id: 'd1', name: 'kolabpanel.com', isPrimary: true }
-];
-
-// Helper to simulate async API call
-const delay = <T>(data: T): Promise<T> => {
-    return new Promise((resolve) => setTimeout(() => resolve(data), DELAY));
-};
-
-// Storage Accessors
-const getStorage = <T>(key: string, defaultVal: T): T => {
-    const stored = localStorage.getItem(key);
-    if (!stored) {
-        localStorage.setItem(key, JSON.stringify(defaultVal));
-        return defaultVal;
-    }
-    return JSON.parse(stored);
-};
-
-const setStorage = (key: string, val: any) => {
-    localStorage.setItem(key, JSON.stringify(val));
-};
+import { 
+    DB_KEYS, 
+    INITIAL_USERS, 
+    INITIAL_PASSWORDS, 
+    INITIAL_PLANS, 
+    INITIAL_DOMAINS, 
+    getStorage, 
+    setStorage, 
+    delay 
+} from './mockData';
 
 // --- MOCK IMPLEMENTATION ---
 
 export const api = {
   auth: {
     login: async (username: string, password: string): Promise<{user: User, token: string}> => {
-        // Simple mock auth
         const users = getStorage<User[]>(DB_KEYS.USERS, INITIAL_USERS);
         const passwords = getStorage<Record<string, string>>(DB_KEYS.PASSWORDS, INITIAL_PASSWORDS);
 
         const user = users.find(u => u.username === username);
         
-        // Verify user exists AND password matches
         if (user && passwords[user.id] === password) {
             const token = `mock_token_${user.id}_${Date.now()}`;
             localStorage.setItem(DB_KEYS.TOKEN, token);
-            // Store current user ID in token for "me" call
             localStorage.setItem('kp_current_user_id', user.id);
             return delay({ user, token });
         }
@@ -110,11 +61,10 @@ export const api = {
 
   sites: {
     list: async (userId: string): Promise<Site[]> => {
-        const sites = getStorage<Site[]>(DB_KEYS.SITES, []); // Default empty
+        const sites = getStorage<Site[]>(DB_KEYS.SITES, []);
         return delay(sites.filter(s => s.userId === userId));
     },
     deploy: async (formData: FormData): Promise<Site> => {
-        // Simulation of deployment
         const userId = formData.get('userId') as string;
         const name = formData.get('name') as string;
         const framework = formData.get('framework') as Framework;
@@ -125,11 +75,8 @@ export const api = {
 
         let sites = getStorage<Site[]>(DB_KEYS.SITES, []);
 
-        // Logic for re-attaching database
         if (attachedDatabaseId) {
-             // 1. Remove the old site that was holding the DB (orphaned)
              sites = sites.filter(s => s.id !== attachedDatabaseId);
-             // 2. The new site will have a database attached
              needsDatabase = true;
         }
 
@@ -138,27 +85,19 @@ export const api = {
             userId,
             name,
             framework,
-            subdomain: subdomain.split('.')[0], // Store just the prefix
-            status: SiteStatus.ACTIVE, // Immediate active for mock
+            subdomain: subdomain.split('.')[0],
+            status: SiteStatus.ACTIVE,
             createdAt: new Date().toISOString().split('T')[0],
-            storageUsed: 15, // Initial size mock
+            storageUsed: 15,
             hasDatabase: needsDatabase
         };
 
-        // Save new site (and potentially removed old orphan site in same array update)
         sites.push(newSite);
         setStorage(DB_KEYS.SITES, sites);
 
-        // Generate Files (Auto-Extract Simulation)
         const mockFiles = getMockFiles(framework);
-        // Map mock files to this site
-        const siteFiles = mockFiles.map(f => ({
-            ...f,
-            siteId: newSite.id // Add siteId to file record
-        }));
+        const siteFiles = mockFiles.map(f => ({ ...f, siteId: newSite.id }));
 
-        // Retrieve existing files registry (flat list)
-        // Structure: { siteId, ...FileNode }
         const allFiles = getStorage<any[]>(DB_KEYS.FILES, []);
         const updatedFiles = [...allFiles, ...siteFiles];
         setStorage(DB_KEYS.FILES, updatedFiles);
@@ -180,19 +119,11 @@ export const api = {
         let sites = getStorage<Site[]>(DB_KEYS.SITES, []);
         
         if (deleteDb) {
-            // Full delete: Remove site record completely
             sites = sites.filter(s => s.id !== siteId);
         } else {
-            // Soft delete: Keep record for DB reference, but mark as DB_ONLY
             sites = sites.map(s => {
                 if (s.id === siteId) {
-                    return {
-                        ...s,
-                        status: SiteStatus.DB_ONLY,
-                        // We keep the name but maybe append a note conceptually, 
-                        // though visually we will handle it in frontend.
-                        storageUsed: 0 // Files are gone
-                    };
+                    return { ...s, status: SiteStatus.DB_ONLY, storageUsed: 0 };
                 }
                 return s;
             });
@@ -200,7 +131,6 @@ export const api = {
         
         setStorage(DB_KEYS.SITES, sites);
 
-        // Delete associated files (Files are always deleted when site is deleted, regardless of DB choice)
         let files = getStorage<any[]>(DB_KEYS.FILES, []);
         files = files.filter(f => f.siteId !== siteId);
         setStorage(DB_KEYS.FILES, files);
@@ -212,7 +142,6 @@ export const api = {
   files: {
       list: async (siteId: string, path: string = '/'): Promise<FileNode[]> => {
           const allFiles = getStorage<any[]>(DB_KEYS.FILES, []);
-          // Filter by site and direct children of path
           const files = allFiles.filter(f => f.siteId === siteId && f.path === path);
           return delay(files);
       },
@@ -248,11 +177,8 @@ export const api = {
       },
       delete: async (siteId: string, path: string, name: string) => {
           let allFiles = getStorage<any[]>(DB_KEYS.FILES, []);
-          // Remove the specific item
           allFiles = allFiles.filter(f => !(f.siteId === siteId && f.path === path && f.name === name));
           
-          // Basic recursive delete simulation (if folder, remove children)
-          // Ideally check if type is folder, then regex match path starts with path/name
           const folderPath = path === '/' ? `/${name}` : `${path}/${name}`;
           allFiles = allFiles.filter(f => !(f.siteId === siteId && f.path.startsWith(folderPath)));
 
@@ -268,6 +194,25 @@ export const api = {
           }
           return delay({ success: true });
       }
+  },
+
+  billing: {
+    submitPayment: async (userId: string, username: string, planName: string, amount: number, proofFile: File): Promise<Payment> => {
+        const payments = getStorage<Payment[]>(DB_KEYS.PAYMENTS, []);
+        const newPayment: Payment = {
+            id: `pay_${Date.now()}`,
+            userId,
+            username,
+            amount,
+            plan: planName,
+            status: PaymentStatus.PENDING,
+            date: new Date().toISOString().split('T')[0],
+            proofUrl: 'mock_proof_url.jpg'
+        };
+        payments.unshift(newPayment);
+        setStorage(DB_KEYS.PAYMENTS, payments);
+        return delay(newPayment);
+    }
   },
 
   tickets: {
@@ -291,7 +236,7 @@ export const api = {
           if (userId) {
               return delay(tickets.filter(t => t.userId === userId));
           }
-          return delay(tickets); // Admin sees all
+          return delay(tickets);
       },
       getMessages: async (ticketId: string): Promise<ChatMessage[]> => {
           const allMessages = getStorage<ChatMessage[]>(DB_KEYS.MESSAGES, []);
@@ -311,7 +256,6 @@ export const api = {
           messages.push(newMessage);
           setStorage(DB_KEYS.MESSAGES, messages);
 
-          // Update ticket timestamp
           const tickets = getStorage<SupportTicket[]>(DB_KEYS.TICKETS, []);
           const ticket = tickets.find(t => t.id === ticketId);
           if (ticket) {
@@ -339,7 +283,7 @@ export const api = {
        return delay({
            totalUsers: users.length,
            totalSites: sites.length,
-           activeRevenue: '0' // Static for now
+           activeRevenue: '0'
        });
     },
     getUsers: async (): Promise<User[]> => {
@@ -364,7 +308,6 @@ export const api = {
             payment.status = status;
             setStorage(DB_KEYS.PAYMENTS, payments);
             
-            // Upgrade user plan if verified
             if (status === PaymentStatus.VERIFIED) {
                 const users = getStorage<User[]>(DB_KEYS.USERS, INITIAL_USERS);
                 const user = users.find(u => u.id === payment.userId);

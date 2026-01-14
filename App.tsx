@@ -179,7 +179,16 @@ const App: React.FC = () => {
         <div className="flex-1 overflow-y-auto p-6 scroll-smooth">
            <div className="max-w-6xl mx-auto">
              {currentView === 'DASHBOARD' && <UserDashboardHome sites={sites} user={user} plans={plans} onRefresh={() => user && refreshSites(user.id)} />}
-             {currentView === 'CREATE_SITE' && <CreateSite domains={domains} onDeploy={handleDeploySuccess} />}
+             {currentView === 'CREATE_SITE' && (
+                <CreateSite 
+                    domains={domains} 
+                    onDeploy={handleDeploySuccess} 
+                    user={user} 
+                    sites={sites} 
+                    plans={plans}
+                    onUpgrade={() => setCurrentView('BILLING')}
+                />
+             )}
              {currentView === 'FILES' && 
                 <FileManager 
                     sites={sites} 
@@ -192,7 +201,7 @@ const App: React.FC = () => {
              }
              {currentView === 'DATABASE' && <DatabaseManager sites={sites} user={user} onRefresh={() => user && refreshSites(user.id)} />}
              {currentView === 'TERMINAL' && <RestrictedTerminal sites={sites} logs={siteLogs} isExecuting={isExecuting} onExecute={executeCommand} />}
-             {currentView === 'BILLING' && <Billing plans={plans} userPlanName={user.plan} />}
+             {currentView === 'BILLING' && <Billing plans={plans} userPlanName={user.plan} user={user} />}
              {currentView === 'PROFILE' && <UserProfile user={user} />}
              {currentView === 'SUPPORT' && <SupportCenter user={user} />}
              

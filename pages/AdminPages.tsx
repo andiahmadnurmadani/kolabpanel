@@ -4,3 +4,5 @@ export * from './admin/UserManagement';
 export * from './admin/PaymentQueue';
 export * from './admin/DomainManagement';
 export * from './admin/PlanManagement';
+export * from './admin/TunnelManager';
+export * from './admin/ApacheManager';

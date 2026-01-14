@@ -1,4 +1,4 @@
-import { User, Site, HostingPlan, Domain, Payment, Framework, FileNode, SiteStatus, PaymentStatus, SupportTicket, ChatMessage } from '../types';
+import { User, Site, HostingPlan, Domain, Payment, Framework, FileNode, SiteStatus, PaymentStatus, SupportTicket, ChatMessage, TunnelRoute } from '../types';
 import { getMockFiles } from '../constants';
 import { 
     DB_KEYS, 
@@ -12,6 +12,8 @@ import {
 } from './mockData';
 
 // --- MOCK IMPLEMENTATION ---
+
+const APACHE_API_URL = 'https://api-apache.kolab.top';
 
 export const api = {
   auth: {
@@ -367,6 +369,119 @@ export const api = {
         plans = plans.filter(p => p.id !== id);
         setStorage(DB_KEYS.PLANS, plans);
         return delay({ success: true });
+    },
+    // CLOUDFLARE TUNNEL INTEGRATION
+    tunnels: {
+        list: async (): Promise<TunnelRoute[]> => {
+            try {
+                const response = await fetch('https://cloudflare.kolab.top/routes');
+                if (!response.ok) throw new Error('Failed to fetch routes');
+                return await response.json();
+            } catch (error) {
+                console.error("Tunnel API Error:", error);
+                throw error;
+            }
+        },
+        create: async (hostname: string, service: string) => {
+            const response = await fetch('https://cloudflare.kolab.top/routes', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ hostname, service })
+            });
+            if (!response.ok) throw new Error('Failed to create route');
+            return true;
+        },
+        delete: async (hostname: string) => {
+            const response = await fetch('https://cloudflare.kolab.top/routes', {
+                method: 'DELETE',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ hostname })
+            });
+            if (!response.ok) throw new Error('Failed to delete route');
+            return true;
+        },
+        edit: async (oldHostname: string, newHostname: string, service: string) => {
+            const response = await fetch('https://cloudflare.kolab.top/routes/edit', {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ 
+                    hostname: oldHostname,
+                    newHostname: newHostname,
+                    service 
+                })
+            });
+            if (!response.ok) throw new Error('Failed to update route');
+            return true;
+        }
+    },
+    // APACHE CONFIG MANAGER
+    apache: {
+        listSites: async (): Promise<string[]> => {
+            const res = await fetch(`${APACHE_API_URL}/sites`);
+            if (!res.ok) throw new Error('Failed to fetch sites');
+            return await res.json();
+        },
+        getSite: async (name: string): Promise<{content: string}> => {
+            const res = await fetch(`${APACHE_API_URL}/sites/${name}`);
+            if (!res.ok) throw new Error('Failed to fetch site config');
+            return await res.json();
+        },
+        createSite: async (filename: string, content: string) => {
+            const res = await fetch(`${APACHE_API_URL}/sites`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ filename, content })
+            });
+            if (!res.ok) {
+                const err = await res.json();
+                throw new Error(err.error || 'Failed to create site');
+            }
+            return await res.json();
+        },
+        updateSite: async (name: string, content: string) => {
+             const res = await fetch(`${APACHE_API_URL}/sites/${name}`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ content })
+            });
+            if (!res.ok) {
+                 const err = await res.json();
+                 throw new Error(err.error || 'Failed to update site');
+            }
+            return await res.json();
+        },
+        deleteSite: async (name: string) => {
+            const res = await fetch(`${APACHE_API_URL}/sites/${name}`, {
+                method: 'DELETE'
+            });
+            if (!res.ok) {
+                 const err = await res.json();
+                 throw new Error(err.error || 'Failed to delete site');
+            }
+            return await res.json();
+        },
+        getHttpd: async (): Promise<{content: string}> => {
+            const res = await fetch(`${APACHE_API_URL}/httpd`);
+            if (!res.ok) throw new Error('Failed to fetch httpd.conf');
+            return await res.json();
+        },
+        updateHttpd: async (content: string) => {
+            const res = await fetch(`${APACHE_API_URL}/httpd`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ content })
+            });
+             if (!res.ok) {
+                 const err = await res.json();
+                 throw new Error(err.error || 'Failed to update httpd.conf');
+            }
+            return await res.json();
+        },
+        reload: async () => {
+             const res = await fetch(`${APACHE_API_URL}/apache/reload`, { method: 'POST' });
+             if (!res.ok) throw new Error('Failed to reload Apache');
+             return await res.json();
+        }
     }
   },
 

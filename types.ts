@@ -133,3 +133,8 @@ export interface LogEntry {
   text: string;
   type: 'info' | 'error' | 'success' | 'command';
 }
+
+export interface TunnelRoute {
+  hostname: string;
+  service: string;
+}

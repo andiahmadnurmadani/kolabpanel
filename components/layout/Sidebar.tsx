@@ -1,6 +1,6 @@
 import React from 'react';
 import { UserRole, User } from '../../types';
-import { LayoutDashboard, Server, FolderOpen, Database, CreditCard, LogOut, FileText, Activity, Users, User as UserIcon, Globe, ShoppingBag, Terminal, ShieldCheck, X, MessageSquare } from 'lucide-react';
+import { LayoutDashboard, Server, FolderOpen, Database, CreditCard, LogOut, FileText, Activity, Users, User as UserIcon, Globe, ShoppingBag, Terminal, ShieldCheck, X, MessageSquare, Network, Settings } from 'lucide-react';
 
 interface SidebarProps {
   user: User;
@@ -54,7 +54,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ user, isOpen, setIsOpen, curre
         <button onClick={() => setIsOpen(false)} className="md:hidden text-slate-400"><X /></button>
       </div>
       
-      <nav className="px-4 space-y-2 mt-4">
+      <nav className="px-4 space-y-2 mt-4 overflow-y-auto h-[calc(100vh-140px)] custom-scrollbar">
         {user.role === UserRole.USER ? (
           <>
             <div className="text-xs font-bold text-slate-500 uppercase tracking-wider px-4 mb-2">Hosting</div>
@@ -78,13 +78,18 @@ export const Sidebar: React.FC<SidebarProps> = ({ user, isOpen, setIsOpen, curre
             <NavItem view="ADMIN_SUPPORT" icon={MessageSquare} label="Support Tickets" />
             <NavItem view="ADMIN_DOMAINS" icon={Globe} label="Manage Domains" />
             <NavItem view="ADMIN_PLANS" icon={ShoppingBag} label="Manage Plans" />
+            
+            <div className="text-xs font-bold text-slate-500 uppercase tracking-wider px-4 mb-2 mt-8">Configuration</div>
+            <NavItem view="ADMIN_TUNNELS" icon={Network} label="Network Tunnels" />
+            <NavItem view="ADMIN_APACHE" icon={Settings} label="Apache Config" />
+            
             <div className="text-xs font-bold text-slate-500 uppercase tracking-wider px-4 mb-2 mt-8">System</div>
             <NavItem view="ARCHITECTURE" icon={FileText} label="Architecture Docs" />
           </>
         )}
       </nav>
 
-      <div className="absolute bottom-0 w-full p-4 border-t border-slate-800">
+      <div className="absolute bottom-0 w-full p-4 border-t border-slate-800 bg-slate-900">
           <button onClick={onLogout} className="flex items-center gap-3 px-4 py-3 text-slate-400 hover:text-white w-full text-sm font-medium">
             <LogOut className="w-5 h-5" /> Logout
           </button>

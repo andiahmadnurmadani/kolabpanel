@@ -16,10 +16,10 @@ import { CreateSite } from './components/user/CreateSite';
 import { FileManager } from './components/user/FileManager';
 import { RestrictedTerminal } from './components/user/RestrictedTerminal';
 import { UserDashboardHome, DatabaseManager, Billing, UserProfile, SupportCenter } from './pages/UserPages';
-import { AdminDashboard, PaymentQueue, UserManagement, DomainManagement, PlanManagement, AdminSupport } from './pages/AdminPages';
+import { AdminDashboard, PaymentQueue, UserManagement, DomainManagement, PlanManagement, AdminSupport, TunnelManager, ApacheManager } from './pages/AdminPages';
 import { ArchitectureDoc } from './pages/ArchitectureDoc';
 
-type ViewState = 'DASHBOARD' | 'CREATE_SITE' | 'FILES' | 'DATABASE' | 'BILLING' | 'PROFILE' | 'TERMINAL' | 'SUPPORT' | 'ADMIN_DASHBOARD' | 'ADMIN_USERS' | 'ADMIN_PAYMENTS' | 'ADMIN_DOMAINS' | 'ADMIN_PLANS' | 'ADMIN_SUPPORT' | 'ARCHITECTURE';
+type ViewState = 'DASHBOARD' | 'CREATE_SITE' | 'FILES' | 'DATABASE' | 'BILLING' | 'PROFILE' | 'TERMINAL' | 'SUPPORT' | 'ADMIN_DASHBOARD' | 'ADMIN_USERS' | 'ADMIN_PAYMENTS' | 'ADMIN_DOMAINS' | 'ADMIN_PLANS' | 'ADMIN_SUPPORT' | 'ADMIN_TUNNELS' | 'ADMIN_APACHE' | 'ARCHITECTURE';
 
 const App: React.FC = () => {
   const [user, setUser] = useState<User | null>(null);
@@ -281,6 +281,8 @@ const App: React.FC = () => {
              {currentView === 'ADMIN_SUPPORT' && <AdminSupport />}
              {currentView === 'ADMIN_DOMAINS' && <DomainManagement domains={domains} setDomains={setDomains} />}
              {currentView === 'ADMIN_PLANS' && <PlanManagement plans={plans} setPlans={setPlans} />}
+             {currentView === 'ADMIN_TUNNELS' && <TunnelManager />}
+             {currentView === 'ADMIN_APACHE' && <ApacheManager />}
              {currentView === 'ARCHITECTURE' && <ArchitectureDoc />}
            </div>
         </div>

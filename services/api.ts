@@ -1,4 +1,4 @@
-import { User, Site, HostingPlan, Domain, Payment, Framework, FileNode, UserRole, SiteStatus, PaymentStatus, SupportTicket, ChatMessage } from '../types';
+import { User, Site, HostingPlan, Domain, Payment, Framework, FileNode, SiteStatus, PaymentStatus, SupportTicket, ChatMessage } from '../types';
 import { getMockFiles } from '../constants';
 
 const API_URL = 'http://localhost:5000/api';
@@ -140,6 +140,23 @@ export const api = {
           });
           return handleResponse(res);
       }
+  },
+
+  billing: {
+    submitPayment: async (userId: string, username: string, planName: string, amount: number, proofFile: File): Promise<Payment> => {
+        const formData = new FormData();
+        formData.append('userId', userId);
+        formData.append('plan', planName);
+        formData.append('amount', String(amount));
+        formData.append('proof', proofFile);
+        
+        const res = await fetch(`${API_URL}/payments`, {
+            method: 'POST',
+            headers: getAuthHeadersMultipart(),
+            body: formData
+        });
+        return handleResponse(res);
+    }
   },
 
   tickets: {

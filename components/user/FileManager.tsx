@@ -136,109 +136,111 @@ export const FileManager: React.FC<FileManagerProps> = ({ sites }) => {
   const showList = currentFiles.length > 0 || isCreatingFolder;
 
   return (
-    <Card title="File Manager" action={<SiteSelector />} className="h-[650px] flex flex-col relative">
-      <div className="mb-4 pb-4 border-b border-slate-100 flex flex-col gap-3">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2">
-                <button onClick={() => { setIsCreatingFolder(true); setNewFolderName('New Folder'); }} disabled={isCreatingFolder} className={`px-3 py-1.5 text-sm bg-white border border-slate-300 text-slate-700 rounded hover:bg-slate-50 transition-colors flex items-center gap-1 ${isCreatingFolder ? 'opacity-50 cursor-not-allowed' : ''}`}>
-                    <Plus className="w-4 h-4" /> New Folder
-                </button>
-                <button onClick={handleUploadClick} className="px-3 py-1.5 text-sm bg-indigo-600 text-white rounded hover:bg-indigo-700 flex items-center gap-2 transition-colors shadow-sm">
-                    <Upload className="w-3 h-3" /> Upload
-                </button>
-                <input type="file" ref={fileInputRef} className="hidden" onChange={handleFileChange} />
+    <Card title="File Manager" action={<SiteSelector />} className="h-[650px]">
+      <div className="flex flex-col h-[540px]">
+          <div className="mb-4 pb-4 border-b border-slate-100 flex flex-col gap-3 shrink-0">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                    <button onClick={() => { setIsCreatingFolder(true); setNewFolderName('New Folder'); }} disabled={isCreatingFolder} className={`px-3 py-1.5 text-sm bg-white border border-slate-300 text-slate-700 rounded hover:bg-slate-50 transition-colors flex items-center gap-1 ${isCreatingFolder ? 'opacity-50 cursor-not-allowed' : ''}`}>
+                        <Plus className="w-4 h-4" /> New Folder
+                    </button>
+                    <button onClick={handleUploadClick} className="px-3 py-1.5 text-sm bg-indigo-600 text-white rounded hover:bg-indigo-700 flex items-center gap-2 transition-colors shadow-sm">
+                        <Upload className="w-3 h-3" /> Upload
+                    </button>
+                    <input type="file" ref={fileInputRef} className="hidden" onChange={handleFileChange} />
+                </div>
+                {selectedSite && (
+                <div className="hidden sm:flex items-center gap-2 text-xs text-slate-500 bg-slate-100 px-3 py-1.5 rounded-full font-mono">
+                    <HardDrive className="w-3 h-3" /><span>/ {selectedSite.name} {currentPath === '/' ? '' : currentPath}</span>
+                </div>
+                )}
+              </div>
+
+              <div className="flex items-center gap-1 text-sm bg-slate-50 p-2 rounded-lg border border-slate-200">
+                  <button onClick={handleNavigateUp} disabled={currentPath === '/'} className="p-1 text-slate-500 hover:bg-slate-200 rounded disabled:opacity-30 disabled:hover:bg-transparent" title="Go Up"><CornerUpLeft className="w-4 h-4" /></button>
+                  <div className="w-px h-4 bg-slate-300 mx-1"></div>
+                  <button onClick={() => setCurrentPath('/')} className={`flex items-center p-1 rounded hover:bg-slate-200 ${currentPath === '/' ? 'text-slate-900 font-semibold' : 'text-slate-500'}`}><Home className="w-4 h-4" /></button>
+                  {currentPath !== '/' && currentPath.split('/').filter(Boolean).map((part, index, arr) => (
+                      <React.Fragment key={index}>
+                          <span className="text-slate-400">/</span>
+                          <button onClick={() => handleBreadcrumbClick(index)} className={`px-1 rounded hover:bg-slate-200 hover:text-indigo-600 ${index === arr.length - 1 ? 'font-semibold text-slate-900' : 'text-slate-500'}`}>{part}</button>
+                      </React.Fragment>
+                  ))}
+              </div>
+          </div>
+          
+          <div className="flex-1 overflow-y-auto bg-slate-50 rounded-lg border border-slate-200 relative min-h-0">
+            <div className="grid grid-cols-12 gap-4 px-4 py-3 text-xs font-bold text-slate-500 border-b border-slate-200 bg-slate-100/50 uppercase tracking-wider sticky top-0 backdrop-blur-sm z-10">
+              <div className="col-span-6">Name</div>
+              <div className="col-span-3">Size</div>
+              <div className="col-span-3 text-right">Actions</div>
             </div>
-            {selectedSite && (
-            <div className="hidden sm:flex items-center gap-2 text-xs text-slate-500 bg-slate-100 px-3 py-1.5 rounded-full font-mono">
-                <HardDrive className="w-3 h-3" /><span>/ {selectedSite.name} {currentPath === '/' ? '' : currentPath}</span>
-            </div>
+            
+            {loadingFiles && <div className="absolute inset-0 bg-white/50 z-20 flex items-center justify-center"><Loader2 className="w-8 h-8 animate-spin text-indigo-600" /></div>}
+            
+            {showList ? (
+              <div className="divide-y divide-slate-100">
+                {isCreatingFolder && (
+                    <div className="grid grid-cols-12 gap-4 px-4 py-3 bg-indigo-50 items-center text-sm h-[53px] animate-in slide-in-from-top-2 fade-in">
+                        <div className="col-span-6 flex items-center gap-3">
+                            <Folder className="w-5 h-5 text-blue-400 fill-blue-50 shrink-0" />
+                            <div className="flex items-center gap-1 w-full">
+                                <input type="text" value={newFolderName} onChange={(e) => setNewFolderName(e.target.value)} onKeyDown={(e) => { if(e.key === 'Enter') submitCreateFolder(); if(e.key === 'Escape') { setIsCreatingFolder(false); setNewFolderName(''); } }} autoFocus className="w-full px-2 py-1 text-sm border border-indigo-300 rounded shadow-sm focus:ring-2 focus:ring-indigo-200 outline-none bg-white" placeholder="Folder Name" />
+                                <button onClick={submitCreateFolder} className="p-1 bg-emerald-100 text-emerald-700 rounded hover:bg-emerald-200"><Check className="w-3.5 h-3.5" /></button>
+                                <button onClick={() => { setIsCreatingFolder(false); setNewFolderName(''); }} className="p-1 bg-red-100 text-red-600 rounded hover:bg-red-200"><X className="w-3.5 h-3.5" /></button>
+                            </div>
+                        </div>
+                        <div className="col-span-3 text-slate-400 font-mono text-xs">-</div>
+                        <div className="col-span-3"></div>
+                    </div>
+                )}
+
+                {currentFiles.map((file) => (
+                    <FileRow 
+                        key={file.id}
+                        file={file}
+                        renamingId={renamingId}
+                        renameValue={renameValue}
+                        setRenameValue={setRenameValue}
+                        onRenameClick={handleRenameClick}
+                        onDeleteClick={handleDeleteClick}
+                        onDownloadClick={(e, f) => alert("Download feature requires a static file serving endpoint setup in Express.")}
+                        onNavigate={handleNavigate}
+                        submitRename={submitRename}
+                        cancelRename={() => { setRenamingId(null); setRenameValue(''); }}
+                    />
+                ))}
+              </div>
+            ) : (
+              !loadingFiles && <div className="flex flex-col items-center justify-center h-full text-slate-400"><Folder className="w-12 h-12 mb-2 opacity-20" /><p>Folder is empty.</p></div>
             )}
           </div>
-
-          <div className="flex items-center gap-1 text-sm bg-slate-50 p-2 rounded-lg border border-slate-200">
-              <button onClick={handleNavigateUp} disabled={currentPath === '/'} className="p-1 text-slate-500 hover:bg-slate-200 rounded disabled:opacity-30 disabled:hover:bg-transparent" title="Go Up"><CornerUpLeft className="w-4 h-4" /></button>
-              <div className="w-px h-4 bg-slate-300 mx-1"></div>
-              <button onClick={() => setCurrentPath('/')} className={`flex items-center p-1 rounded hover:bg-slate-200 ${currentPath === '/' ? 'text-slate-900 font-semibold' : 'text-slate-500'}`}><Home className="w-4 h-4" /></button>
-              {currentPath !== '/' && currentPath.split('/').filter(Boolean).map((part, index, arr) => (
-                  <React.Fragment key={index}>
-                      <span className="text-slate-400">/</span>
-                      <button onClick={() => handleBreadcrumbClick(index)} className={`px-1 rounded hover:bg-slate-200 hover:text-indigo-600 ${index === arr.length - 1 ? 'font-semibold text-slate-900' : 'text-slate-500'}`}>{part}</button>
-                  </React.Fragment>
-              ))}
+          
+          <div className="mt-4 pt-4 border-t border-slate-100 flex justify-between items-center text-xs text-slate-500 shrink-0">
+            <div>{currentFiles.length} items</div>
+            <div>Total Used: {selectedSite.storageUsed} MB</div>
           </div>
-      </div>
-      
-      <div className="flex-1 overflow-y-auto bg-slate-50 rounded-lg border border-slate-200 relative">
-        <div className="grid grid-cols-12 gap-4 px-4 py-3 text-xs font-bold text-slate-500 border-b border-slate-200 bg-slate-100/50 uppercase tracking-wider sticky top-0 backdrop-blur-sm z-10">
-          <div className="col-span-6">Name</div>
-          <div className="col-span-3">Size</div>
-          <div className="col-span-3 text-right">Actions</div>
-        </div>
-        
-        {loadingFiles && <div className="absolute inset-0 bg-white/50 z-20 flex items-center justify-center"><Loader2 className="w-8 h-8 animate-spin text-indigo-600" /></div>}
-        
-        {showList ? (
-          <div className="divide-y divide-slate-100">
-            {isCreatingFolder && (
-                <div className="grid grid-cols-12 gap-4 px-4 py-3 bg-indigo-50 items-center text-sm h-[53px] animate-in slide-in-from-top-2 fade-in">
-                    <div className="col-span-6 flex items-center gap-3">
-                        <Folder className="w-5 h-5 text-blue-400 fill-blue-50 shrink-0" />
-                        <div className="flex items-center gap-1 w-full">
-                            <input type="text" value={newFolderName} onChange={(e) => setNewFolderName(e.target.value)} onKeyDown={(e) => { if(e.key === 'Enter') submitCreateFolder(); if(e.key === 'Escape') { setIsCreatingFolder(false); setNewFolderName(''); } }} autoFocus className="w-full px-2 py-1 text-sm border border-indigo-300 rounded shadow-sm focus:ring-2 focus:ring-indigo-200 outline-none bg-white" placeholder="Folder Name" />
-                            <button onClick={submitCreateFolder} className="p-1 bg-emerald-100 text-emerald-700 rounded hover:bg-emerald-200"><Check className="w-3.5 h-3.5" /></button>
-                            <button onClick={() => { setIsCreatingFolder(false); setNewFolderName(''); }} className="p-1 bg-red-100 text-red-600 rounded hover:bg-red-200"><X className="w-3.5 h-3.5" /></button>
+
+          {deleteTarget && (
+            <div className="fixed inset-0 z-[60] flex items-center justify-center p-4">
+                <div className="absolute inset-0 bg-slate-900/60 backdrop-blur-sm transition-opacity" onClick={() => setDeleteTarget(null)} />
+                <div className="relative w-full max-w-sm bg-white rounded-xl shadow-2xl p-6 animate-in fade-in zoom-in-95 duration-200">
+                    <div className="flex items-start gap-4">
+                        <div className="p-3 bg-red-100 rounded-full shrink-0"><AlertTriangle className="w-6 h-6 text-red-600" /></div>
+                        <div>
+                            <h3 className="text-lg font-bold text-slate-900">Delete Item?</h3>
+                            <p className="text-sm text-slate-500 mt-1">Are you sure you want to delete <span className="font-bold text-slate-800">{deleteTarget.name}</span>?</p>
+                            {deleteTarget.type === 'folder' && <p className="text-xs text-red-600 mt-2 bg-red-50 p-2 rounded border border-red-100">Warning: All contents inside this folder will be permanently deleted.</p>}
                         </div>
                     </div>
-                    <div className="col-span-3 text-slate-400 font-mono text-xs">-</div>
-                    <div className="col-span-3"></div>
-                </div>
-            )}
-
-            {currentFiles.map((file) => (
-                <FileRow 
-                    key={file.id}
-                    file={file}
-                    renamingId={renamingId}
-                    renameValue={renameValue}
-                    setRenameValue={setRenameValue}
-                    onRenameClick={handleRenameClick}
-                    onDeleteClick={handleDeleteClick}
-                    onDownloadClick={(e, f) => alert("Download feature requires a static file serving endpoint setup in Express.")}
-                    onNavigate={handleNavigate}
-                    submitRename={submitRename}
-                    cancelRename={() => { setRenamingId(null); setRenameValue(''); }}
-                />
-            ))}
-          </div>
-        ) : (
-          !loadingFiles && <div className="flex flex-col items-center justify-center h-full text-slate-400"><Folder className="w-12 h-12 mb-2 opacity-20" /><p>Folder is empty.</p></div>
-        )}
-      </div>
-      
-      <div className="mt-4 pt-4 border-t border-slate-100 flex justify-between items-center text-xs text-slate-500">
-        <div>{currentFiles.length} items</div>
-        <div>Total Used: {selectedSite.storageUsed} MB</div>
-      </div>
-
-      {deleteTarget && (
-        <div className="fixed inset-0 z-[60] flex items-center justify-center p-4">
-            <div className="absolute inset-0 bg-slate-900/60 backdrop-blur-sm transition-opacity" onClick={() => setDeleteTarget(null)} />
-            <div className="relative w-full max-w-sm bg-white rounded-xl shadow-2xl p-6 animate-in fade-in zoom-in-95 duration-200">
-                <div className="flex items-start gap-4">
-                    <div className="p-3 bg-red-100 rounded-full shrink-0"><AlertTriangle className="w-6 h-6 text-red-600" /></div>
-                    <div>
-                        <h3 className="text-lg font-bold text-slate-900">Delete Item?</h3>
-                        <p className="text-sm text-slate-500 mt-1">Are you sure you want to delete <span className="font-bold text-slate-800">{deleteTarget.name}</span>?</p>
-                        {deleteTarget.type === 'folder' && <p className="text-xs text-red-600 mt-2 bg-red-50 p-2 rounded border border-red-100">Warning: All contents inside this folder will be permanently deleted.</p>}
+                    <div className="mt-6 flex justify-end gap-3">
+                        <button onClick={() => setDeleteTarget(null)} className="px-4 py-2 text-slate-600 hover:bg-slate-50 rounded-lg font-medium text-sm transition-colors">Cancel</button>
+                        <button onClick={confirmDelete} className="px-4 py-2 bg-red-600 text-white rounded-lg font-medium text-sm hover:bg-red-700 shadow-sm transition-colors">Delete</button>
                     </div>
                 </div>
-                <div className="mt-6 flex justify-end gap-3">
-                    <button onClick={() => setDeleteTarget(null)} className="px-4 py-2 text-slate-600 hover:bg-slate-50 rounded-lg font-medium text-sm transition-colors">Cancel</button>
-                    <button onClick={confirmDelete} className="px-4 py-2 bg-red-600 text-white rounded-lg font-medium text-sm hover:bg-red-700 shadow-sm transition-colors">Delete</button>
-                </div>
             </div>
-        </div>
-      )}
+          )}
+      </div>
     </Card>
   );
 };

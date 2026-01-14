@@ -1,7 +1,7 @@
-import React, { useState } from 'react';
-import { Card } from '../../components/Shared';
-import { HostingPlan, User } from '../../types';
-import { CreditCard, QrCode, Upload, Check, Loader2, X, AlertTriangle, ArrowRight } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { Card, StatusBadge } from '../../components/Shared';
+import { HostingPlan, User, Payment } from '../../types';
+import { CreditCard, QrCode, Upload, Check, Loader2, X, AlertTriangle, ArrowRight, RefreshCcw, FileText, Clock } from 'lucide-react';
 import { api } from '../../services/api';
 
 interface BillingProps {
@@ -17,6 +17,18 @@ export const Billing: React.FC<BillingProps> = ({ plans = [], userPlanName = 'Ba
     const [proofFile, setProofFile] = useState<File | null>(null);
     const [isSubmitting, setIsSubmitting] = useState(false);
     const [successMsg, setSuccessMsg] = useState('');
+    
+    // History State
+    const [paymentHistory, setPaymentHistory] = useState<Payment[]>([]);
+
+    useEffect(() => {
+        loadHistory();
+    }, [user.id, isSubmitting]);
+
+    const loadHistory = async () => {
+        const history = await api.billing.getHistory(user.id);
+        setPaymentHistory(history);
+    };
 
     const handleUpgradeClick = (plan: HostingPlan) => {
         // Generate random unique code between 0 and 500
@@ -45,7 +57,7 @@ export const Billing: React.FC<BillingProps> = ({ plans = [], userPlanName = 'Ba
         setIsSubmitting(true);
         try {
             const totalAmount = selectedPlan.price + uniqueCode;
-            await api.billing.submitPayment(user.id, user.username, selectedPlan.name, totalAmount, proofFile);
+            await api.billing.submitPayment(user.id, user.username, selectedPlan.name, totalAmount, paymentMethod, proofFile);
             
             setSuccessMsg("Payment submitted successfully! Please wait for admin verification.");
             setTimeout(() => {
@@ -62,7 +74,7 @@ export const Billing: React.FC<BillingProps> = ({ plans = [], userPlanName = 'Ba
     const totalAmount = selectedPlan ? selectedPlan.price + uniqueCode : 0;
 
     return (
-        <div className="space-y-6">
+        <div className="space-y-6 animate-in fade-in duration-300">
              <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
                 {plans.map(plan => {
                     const isActive = plan.name === userPlanName;
@@ -105,7 +117,57 @@ export const Billing: React.FC<BillingProps> = ({ plans = [], userPlanName = 'Ba
              </div>
 
              <Card title="Payment History">
-                 <div className="text-center py-8 text-slate-500 text-sm">No recent transactions found.</div>
+                 {paymentHistory.length === 0 ? (
+                    <div className="text-center py-12 flex flex-col items-center justify-center">
+                        <div className="w-16 h-16 bg-slate-50 rounded-full flex items-center justify-center mb-4 border border-slate-100">
+                             <FileText className="w-8 h-8 text-slate-300" />
+                        </div>
+                        <h4 className="text-slate-900 font-bold mb-1">No Transactions</h4>
+                        <p className="text-slate-500 text-sm">You haven't purchased any plans yet.</p>
+                    </div>
+                 ) : (
+                    <div className="overflow-x-auto">
+                        <table className="min-w-full text-left text-sm whitespace-nowrap">
+                            <thead className="bg-slate-50 text-slate-500 border-b border-slate-200">
+                                <tr>
+                                    <th className="px-6 py-3 font-medium">Date</th>
+                                    <th className="px-6 py-3 font-medium">Invoice ID</th>
+                                    <th className="px-6 py-3 font-medium">Plan</th>
+                                    <th className="px-6 py-3 font-medium">Method</th>
+                                    <th className="px-6 py-3 font-medium">Amount</th>
+                                    <th className="px-6 py-3 font-medium">Status</th>
+                                </tr>
+                            </thead>
+                            <tbody className="divide-y divide-slate-50">
+                                {paymentHistory.map(pay => (
+                                    <tr key={pay.id} className="hover:bg-slate-50/50 transition-colors">
+                                        <td className="px-6 py-4 text-slate-600 flex items-center gap-2">
+                                            <Clock className="w-4 h-4 text-slate-400" />
+                                            {pay.date}
+                                        </td>
+                                        <td className="px-6 py-4 font-mono text-xs text-slate-500">#{pay.id}</td>
+                                        <td className="px-6 py-4 font-bold text-slate-800">{pay.plan}</td>
+                                        <td className="px-6 py-4">
+                                            {pay.method === 'BANK' ? (
+                                                <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded bg-blue-50 text-blue-700 text-xs font-medium border border-blue-100">
+                                                    <CreditCard className="w-3 h-3" /> Bank Transfer
+                                                </span>
+                                            ) : (
+                                                <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded bg-orange-50 text-orange-700 text-xs font-medium border border-orange-100">
+                                                    <QrCode className="w-3 h-3" /> QRIS / E-Wallet
+                                                </span>
+                                            )}
+                                        </td>
+                                        <td className="px-6 py-4 font-medium text-slate-900">Rp {pay.amount.toLocaleString()}</td>
+                                        <td className="px-6 py-4">
+                                            <StatusBadge status={pay.status} />
+                                        </td>
+                                    </tr>
+                                ))}
+                            </tbody>
+                        </table>
+                    </div>
+                 )}
              </Card>
 
              {/* PAYMENT MODAL */}
@@ -135,6 +197,23 @@ export const Billing: React.FC<BillingProps> = ({ plans = [], userPlanName = 'Ba
                             </div>
                         ) : (
                             <div className="p-6">
+                                {/* WARNING ALERT for Plan Replacement */}
+                                {userPlanName && userPlanName !== 'Basic' && userPlanName !== 'Free' && (
+                                    <div className="mb-6 p-4 bg-amber-50 border border-amber-200 rounded-xl flex items-start gap-3 animate-in fade-in slide-in-from-top-2">
+                                        <div className="p-2 bg-amber-100 rounded-full shrink-0">
+                                            <RefreshCcw className="w-5 h-5 text-amber-600" />
+                                        </div>
+                                        <div>
+                                            <h4 className="font-bold text-amber-800 text-sm">Plan Replacement Warning</h4>
+                                            <p className="text-xs text-amber-700 mt-1 leading-relaxed">
+                                                You are currently active on the <span className="font-bold">{userPlanName}</span> plan. 
+                                                Proceeding with this upgrade will <span className="font-bold underline">replace/overwrite</span> your existing plan immediately. 
+                                                Any remaining duration on your current plan will not be carried over.
+                                            </p>
+                                        </div>
+                                    </div>
+                                )}
+
                                 <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
                                     {/* LEFT COLUMN: Summary & Options */}
                                     <div className="space-y-6">
@@ -163,7 +242,7 @@ export const Billing: React.FC<BillingProps> = ({ plans = [], userPlanName = 'Ba
                                         </div>
 
                                         <div className="p-3 bg-amber-50 text-amber-800 text-xs rounded-lg border border-amber-100 flex gap-2">
-                                            <AlertTriangle className="w-4 h-4 shrink-0" />
+                                            <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
                                             <p>Important: Please transfer the <b>EXACT</b> amount (down to the last 3 digits) for automatic verification.</p>
                                         </div>
 
@@ -197,28 +276,29 @@ export const Billing: React.FC<BillingProps> = ({ plans = [], userPlanName = 'Ba
                                                 <div className="space-y-5 h-full flex flex-col justify-center">
                                                     <div className="flex items-center justify-between border-b border-slate-200 pb-4">
                                                         <div className="flex items-center gap-3">
-                                                            <div className="w-12 h-12 bg-blue-700 text-white rounded-lg flex items-center justify-center font-bold text-sm italic shadow-sm">BCA</div>
+                                                            <img src="https://play-lh.googleusercontent.com/sykVTkZ6juW7CD1eeZCK1UTi1aDwr4tOQ6KRMuMimOsIZYsK9Rbxwhk-PGu3nA1iaoQ1=w240-h480-rw" alt="Bank Mandiri" className="w-12 h-12 rounded-lg object-contain bg-white shadow-sm border border-slate-100" />
                                                             <div>
-                                                                <p className="text-xs text-slate-500 font-medium">Bank Central Asia</p>
-                                                                <p className="font-bold text-slate-900 text-sm">PT. Kolab Hosting Indonesia</p>
+                                                                <p className="text-xs text-slate-500 font-medium">Bank Mandiri</p>
+                                                                <p className="font-bold text-slate-900 text-sm">ANDI AHMAD NURMADANI</p>
                                                             </div>
                                                         </div>
                                                     </div>
                                                     <div>
                                                         <p className="text-xs text-slate-500 mb-1.5 uppercase tracking-wide font-bold">Account Number</p>
                                                         <div className="flex items-center justify-between bg-white border border-slate-200 rounded-lg p-3 shadow-sm">
-                                                            <code className="text-xl font-mono font-bold text-slate-800 tracking-wider">8830-1234-5678</code>
-                                                            <button className="text-xs text-indigo-600 font-bold hover:bg-indigo-50 px-2 py-1 rounded transition-colors" onClick={() => navigator.clipboard.writeText('883012345678')}>COPY</button>
+                                                            <code className="text-xl font-mono font-bold text-slate-800 tracking-wider">1770020697923</code>
+                                                            <button className="text-xs text-indigo-600 font-bold hover:bg-indigo-50 px-2 py-1 rounded transition-colors" onClick={() => navigator.clipboard.writeText('1770020697923')}>COPY</button>
                                                         </div>
                                                     </div>
                                                 </div>
                                             ) : (
                                                 <div className="flex flex-col items-center text-center justify-center h-full">
-                                                    <div className="bg-white p-3 rounded-xl border border-slate-200 mb-4 shadow-sm">
-                                                         <img src="https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=KolabPanelPayment" alt="QRIS" className="w-40 h-40 mix-blend-multiply" />
+                                                    <div className="bg-white p-3 rounded-xl border border-slate-200 mb-4 shadow-sm relative overflow-hidden">
+                                                         <img src="https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=1770020697923" alt="QRIS" className="w-40 h-40 mix-blend-multiply" />
                                                     </div>
-                                                    <p className="font-bold text-slate-900 text-sm">Scan with any E-Wallet</p>
-                                                    <p className="text-xs text-slate-500">GoPay, OVO, Dana, ShopeePay, LinkAja</p>
+                                                    <p className="font-bold text-slate-900 text-sm">HOSTING KOLAB</p>
+                                                    <p className="text-xs text-slate-500 font-medium">BARANG DIGITAL</p>
+                                                    <p className="text-[10px] text-slate-400 mt-1 font-mono">NMID : ID1025465066435</p>
                                                 </div>
                                             )}
                                         </div>

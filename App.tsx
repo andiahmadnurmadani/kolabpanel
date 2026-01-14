@@ -27,6 +27,9 @@ const App: React.FC = () => {
   const [isSidebarOpen, setSidebarOpen] = useState(true);
   const [loading, setLoading] = useState(true);
   
+  // Notification State
+  const [notifications, setNotifications] = useState<Record<string, boolean>>({});
+  
   // Data State
   const [domains, setDomains] = useState<Domain[]>([]);
   const [plans, setPlans] = useState<HostingPlan[]>([]);
@@ -40,6 +43,46 @@ const App: React.FC = () => {
   useEffect(() => {
     init();
   }, []);
+
+  // --- NOTIFICATION LOGIC ---
+  // Check for actual data (pending payments, open tickets) to set notifications
+  useEffect(() => {
+    if (!user) return;
+
+    const checkDataNotifications = async () => {
+        if (user.role === UserRole.ADMIN) {
+            try {
+                // Admin: Fetch real counts
+                const [payments, tickets] = await Promise.all([
+                    api.admin.getPayments(),
+                    api.tickets.list()
+                ]);
+
+                const hasPendingPayments = payments.some(p => p.status === 'PENDING');
+                const hasOpenTickets = tickets.some(t => t.status === 'OPEN');
+
+                setNotifications(prev => ({ 
+                    ...prev, 
+                    'ADMIN_PAYMENTS': hasPendingPayments,
+                    'ADMIN_SUPPORT': hasOpenTickets 
+                }));
+            } catch (e) {
+                console.error("Failed to sync admin notifications", e);
+            }
+        } else {
+            // User: Simulate a specific event (like payment verification) if needed
+            // For now, we keep it clean or just simulate one event for demo
+            const timer = setTimeout(() => {
+                 // Example: Notify user to check billing after login
+                 setNotifications(prev => ({ ...prev, 'BILLING': true }));
+            }, 3000);
+            return () => clearTimeout(timer);
+        }
+    };
+
+    checkDataNotifications();
+  }, [user]); 
+  // -------------------------
 
   const init = async () => {
     setLoading(true);
@@ -111,12 +154,29 @@ const App: React.FC = () => {
     localStorage.removeItem('kp_current_user_id');
     setUser(null);
     setSites([]);
+    setNotifications({}); // Clear notifications on logout
   };
 
   const handleDeploySuccess = async () => {
     if (!user) return;
     await refreshSites(user.id);
-    setCurrentView('FILES');
+    handleViewChange('FILES');
+  };
+
+  // Wrapper to handle navigation AND clear notifications
+  const handleViewChange = (view: ViewState) => {
+      setCurrentView(view);
+      
+      // If there was a notification for this view, clear it
+      if (notifications[view]) {
+          setNotifications(prev => ({
+              ...prev,
+              [view]: false
+          }));
+      }
+      
+      // Re-trigger a check if we are leaving an admin page to verify if others still need attention?
+      // For now, simpler is better. Clicking the item clears the dot.
   };
 
   if (loading) {
@@ -164,8 +224,9 @@ const App: React.FC = () => {
         isOpen={isSidebarOpen} 
         setIsOpen={setSidebarOpen} 
         currentView={currentView} 
-        setCurrentView={setCurrentView} 
+        setCurrentView={handleViewChange} 
         onLogout={handleLogout}
+        notifications={notifications}
       />
 
       <main className="flex-1 flex flex-col h-screen overflow-hidden">
@@ -173,7 +234,7 @@ const App: React.FC = () => {
           user={user} 
           currentView={currentView} 
           setSidebarOpen={setSidebarOpen} 
-          onProfileClick={() => user.role === UserRole.USER && setCurrentView('PROFILE')} 
+          onProfileClick={() => user.role === UserRole.USER && handleViewChange('PROFILE')} 
         />
 
         <div className="flex-1 overflow-y-auto p-6 scroll-smooth">
@@ -186,7 +247,7 @@ const App: React.FC = () => {
                     user={user} 
                     sites={sites} 
                     plans={plans}
-                    onUpgrade={() => setCurrentView('BILLING')}
+                    onUpgrade={() => handleViewChange('BILLING')}
                 />
              )}
              {currentView === 'FILES' && 

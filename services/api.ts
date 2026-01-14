@@ -197,7 +197,7 @@ export const api = {
   },
 
   billing: {
-    submitPayment: async (userId: string, username: string, planName: string, amount: number, proofFile: File): Promise<Payment> => {
+    submitPayment: async (userId: string, username: string, planName: string, amount: number, method: 'BANK' | 'QR', proofFile: File): Promise<Payment> => {
         const payments = getStorage<Payment[]>(DB_KEYS.PAYMENTS, []);
         const newPayment: Payment = {
             id: `pay_${Date.now()}`,
@@ -205,6 +205,7 @@ export const api = {
             username,
             amount,
             plan: planName,
+            method,
             status: PaymentStatus.PENDING,
             date: new Date().toISOString().split('T')[0],
             proofUrl: 'mock_proof_url.jpg'
@@ -212,6 +213,10 @@ export const api = {
         payments.unshift(newPayment);
         setStorage(DB_KEYS.PAYMENTS, payments);
         return delay(newPayment);
+    },
+    getHistory: async (userId: string): Promise<Payment[]> => {
+        const payments = getStorage<Payment[]>(DB_KEYS.PAYMENTS, []);
+        return delay(payments.filter(p => p.userId === userId));
     }
   },
 

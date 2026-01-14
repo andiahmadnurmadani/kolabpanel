@@ -177,11 +177,12 @@ export const api = {
   },
 
   billing: {
-    submitPayment: async (userId: string, username: string, planName: string, amount: number, proofFile: File): Promise<Payment> => {
+    submitPayment: async (userId: string, username: string, planName: string, amount: number, method: 'BANK' | 'QR', proofFile: File): Promise<Payment> => {
         const formData = new FormData();
         formData.append('userId', userId);
         formData.append('plan', planName);
         formData.append('amount', String(amount));
+        formData.append('method', method);
         formData.append('proof', proofFile);
         
         const res = await fetch(`${API_URL}/payments`, {
@@ -316,5 +317,14 @@ export const api = {
         const res = await fetch(`${API_URL}/domains`, { headers: getAuthHeaders() });
         return handleResponse(res);
     }
+  },
+
+  executeTerminalCommand: async (siteId: string, command: string): Promise<{ success: boolean; output?: { stdout: string; stderr: string; exitCode: number }; error?: string }> => {
+    const res = await fetch(`${API_URL}/sites/${siteId}/execute`, {
+      method: 'POST',
+      headers: getAuthHeaders(),
+      body: JSON.stringify({ command })
+    });
+    return handleResponse(res);
   }
 };

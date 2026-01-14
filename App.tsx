@@ -122,6 +122,15 @@ const App: React.FC = () => {
       const sitesData = await api.sites.list(userId);
       setSites(sitesData);
   }
+  
+  const refreshUser = async () => {
+      try {
+          const userData = await api.auth.me();
+          setUser(userData);
+      } catch (e) {
+          console.error("Failed to refresh user data", e);
+      }
+  };
 
   // Update sites when user changes or view changes
   useEffect(() => {
@@ -263,7 +272,7 @@ const App: React.FC = () => {
              {currentView === 'DATABASE' && <DatabaseManager sites={sites} user={user} onRefresh={() => user && refreshSites(user.id)} />}
              {currentView === 'TERMINAL' && <RestrictedTerminal sites={sites} logs={siteLogs} isExecuting={isExecuting} onExecute={executeCommand} />}
              {currentView === 'BILLING' && <Billing plans={plans} userPlanName={user.plan} user={user} />}
-             {currentView === 'PROFILE' && <UserProfile user={user} />}
+             {currentView === 'PROFILE' && <UserProfile user={user} onUpdate={refreshUser} />}
              {currentView === 'SUPPORT' && <SupportCenter user={user} />}
              
              {currentView === 'ADMIN_DASHBOARD' && <AdminDashboard />}

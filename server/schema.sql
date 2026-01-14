@@ -46,6 +46,7 @@ CREATE TABLE IF NOT EXISTS payments (
   user_id VARCHAR(50),
   amount INT,
   plan VARCHAR(50),
+  method VARCHAR(10) DEFAULT 'BANK',
   status VARCHAR(50),
   date DATETIME DEFAULT CURRENT_TIMESTAMP,
   proof_url VARCHAR(255),

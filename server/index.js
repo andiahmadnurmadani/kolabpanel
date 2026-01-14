@@ -1,10 +1,11 @@
-const express = require('express');
+﻿const express = require('express');
 const cors = require('cors');
 const jwt = require('jsonwebtoken');
 const multer = require('multer');
 const fs = require('fs');
 const path = require('path');
 const AdmZip = require('adm-zip');
+const { Client } = require('ssh2');
 
 // Load env deterministically from server/.env (override any existing env vars)
 require('./loadEnv').loadEnv();
@@ -48,10 +49,6 @@ const STORAGE_ROOT = process.env.STORAGE_ROOT
     ? resolveEnvPath(process.env.STORAGE_ROOT)
     : path.resolve(__dirname, '..', 'userdata');
 
-const UPLOAD_TEMP = process.env.UPLOAD_TEMP
-    ? resolveEnvPath(process.env.UPLOAD_TEMP)
-    : path.resolve(__dirname, 'uploads');
-
 const PAYMENT_PROOF_PATH = process.env.PAYMENT_PROOF_PATH
     ? resolveEnvPath(process.env.PAYMENT_PROOF_PATH)
     : path.resolve(__dirname, '..', 'user_billing');
@@ -74,22 +71,21 @@ const isUNCPath = (p) => p.startsWith('\\\\');
 
 try {
     ensureWritableDirSync(STORAGE_ROOT, isUNCPath(STORAGE_ROOT));
-    ensureWritableDirSync(UPLOAD_TEMP);
     ensureWritableDirSync(PAYMENT_PROOF_PATH);
 } catch (e) {
     console.error('[storage] Storage path is not writable:', e.message);
     console.error('[storage] STORAGE_ROOT=', process.env.STORAGE_ROOT);
-    console.error('[storage] UPLOAD_TEMP=', process.env.UPLOAD_TEMP);
     console.error('[storage] PAYMENT_PROOF_PATH=', process.env.PAYMENT_PROOF_PATH);
     process.exit(1);
 }
 
 console.log('[storage] STORAGE_ROOT resolved =', STORAGE_ROOT);
-console.log('[storage] UPLOAD_TEMP resolved =', UPLOAD_TEMP);
 console.log('[storage] PAYMENT_PROOF_PATH resolved =', PAYMENT_PROOF_PATH);
 
 const DEPLOY_RETRY_COUNT = 5;
 const DEPLOY_RETRY_BASE_DELAY_MS = 300;
+const NETWORK_WRITE_CHUNK_SIZE = 64 * 1024; // 64KB chunks for optimal network write
+const PARALLEL_EXTRACT_LIMIT = 5; // Extract max 5 files simultaneously
 
 const safeRm = async (targetPath) => {
     try {
@@ -142,6 +138,13 @@ const newJobId = () => `deploy_${Date.now()}_${Math.random().toString(16).slice(
 
 const setJob = (jobId, patch) => {
     const prev = deployJobs.get(jobId) || {};
+    
+    // Defense: Only allow status='completed' when progress=100
+    if (patch.status === 'completed' && patch.progress !== 100) {
+        console.warn(`[setJob] Prevented premature completion for job ${jobId}: progress=${patch.progress}`);
+        delete patch.status; // Remove status from update
+    }
+    
     deployJobs.set(jobId, { ...prev, ...patch, updatedAt: new Date().toISOString() });
 };
 
@@ -199,12 +202,11 @@ const initDB = async () => {
 app.use(cors());
 app.use(express.json());
 
-// Multer Config
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => cb(null, UPLOAD_TEMP),
-  filename: (req, file, cb) => cb(null, Date.now() + '-' + file.originalname)
+// Multer Config - Memory storage (upload langsung ke UNC path nanti di endpoint)
+const upload = multer({ 
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 100 * 1024 * 1024 } // 100MB limit
 });
-const upload = multer({ storage });
 
 // Security: Prevent Directory Traversal
 const getSafePath = async (userId, siteName, relativePath) => {
@@ -348,58 +350,104 @@ app.get('/api/sites', async (req, res) => {
 
 app.post('/api/sites/deploy', upload.single('file'), async (req, res) => {
     const { userId, name, framework, subdomain, needsDatabase, attachedDatabaseId } = req.body;
-    const file = req.file;
+    const file = req.file; // file.buffer contains the uploaded file data
 
     if (!userId || !name || !framework || !subdomain) {
-        if (file && file.path) await safeRm(file.path);
         return res.status(400).json({ message: 'Missing required fields' });
     }
 
     try {
         const [users] = await db.execute('SELECT username FROM users WHERE id = ?', [userId]);
         if (users.length === 0) {
-            if (file && file.path) await safeRm(file.path);
             return res.status(404).json({ message: 'User not found' });
         }
         const username = users[0].username;
 
         // Create background job
         const jobId = newJobId();
+        const zipBuffer = file ? file.buffer : null;
+        
         setJob(jobId, {
             id: jobId,
             status: 'queued',
             createdAt: new Date().toISOString(),
             phase: 'queued',
-            request: { userId, username, name, framework, subdomain, needsDatabase, attachedDatabaseId, zipPath: file ? file.path : null },
+            progress: 0,
+            request: { userId, username, name, framework, subdomain, needsDatabase, attachedDatabaseId, zipBuffer },
         });
 
-        // Run deployment in background
+        // Run deployment in background with retry
         enqueueDeployJob(jobId, async () => {
             const job = getJob(jobId);
             if (!job) return;
 
-            setJob(jobId, { status: 'running', phase: 'extracting' });
+            setJob(jobId, { status: 'running', phase: 'writing', progress: 10 });
             const reqData = job.request;
 
             const userDir = path.join(STORAGE_ROOT, reqData.username);
             const finalSiteDir = path.join(userDir, reqData.name);
+            const zipPath = path.join(finalSiteDir, `upload_${Date.now()}.zip`);
 
             let extractSuccess = false;
             let retryCount = 0;
 
             while (!extractSuccess && retryCount <= DEPLOY_RETRY_COUNT) {
                 try {
-                    await safeRm(finalSiteDir);
-                    await withRetries(() => fs.promises.mkdir(userDir, { recursive: true }));
+                    setJob(jobId, { progress: 20 + (retryCount * 10) });
+                    
+                    // Create directory structure with retry
                     await withRetries(() => fs.promises.mkdir(finalSiteDir, { recursive: true }));
-
-                    if (reqData.zipPath) {
-                        const zip = new AdmZip(reqData.zipPath);
-                        const entries = zip.getEntries();
+                    
+                    if (reqData.zipBuffer) {
+                        setJob(jobId, { phase: 'uploading', progress: 30 });
                         
-                        await withRetries(() => {
+                        // Write ZIP buffer to UNC path with retry - chunked for better network performance
+                        await withRetries(async () => {
+                            const writeStream = fs.createWriteStream(zipPath, { 
+                                highWaterMark: NETWORK_WRITE_CHUNK_SIZE,
+                                flags: 'w'
+                            });
+                            
+                            return new Promise((resolve, reject) => {
+                                let offset = 0;
+                                
+                                const writeChunk = () => {
+                                    const chunk = reqData.zipBuffer.slice(offset, offset + NETWORK_WRITE_CHUNK_SIZE);
+                                    if (chunk.length === 0) {
+                                        writeStream.end();
+                                        return;
+                                    }
+                                    
+                                    offset += chunk.length;
+                                    
+                                    if (!writeStream.write(chunk)) {
+                                        writeStream.once('drain', writeChunk);
+                                    } else {
+                                        setImmediate(writeChunk);
+                                    }
+                                };
+                                
+                                writeStream.on('finish', resolve);
+                                writeStream.on('error', reject);
+                                writeChunk();
+                            });
+                        });
+                        
+                        setJob(jobId, { phase: 'extracting', progress: 40 });
+                        
+                        // Extract with retry - parallel processing for better performance
+                        await withRetries(async () => {
+                            const zip = new AdmZip(zipPath);
+                            const entries = zip.getEntries();
+                            
+                            // Separate directories and files
+                            const dirs = [];
+                            const files = [];
+                            
                             for (const entry of entries) {
                                 const entryPath = entry.entryName.replace(/\\/g, '/');
+                                
+                                // Skip unwanted files
                                 if (
                                     entryPath.includes('/.git/') || 
                                     entryPath.startsWith('.git/') ||
@@ -413,22 +461,85 @@ app.post('/api/sites/deploy', upload.single('file'), async (req, res) => {
                                 }
                                 
                                 if (entry.isDirectory) {
-                                    const targetDir = path.join(finalSiteDir, entry.entryName);
-                                    fs.mkdirSync(targetDir, { recursive: true });
+                                    dirs.push(entry);
                                 } else {
+                                    files.push(entry);
+                                }
+                            }
+                            
+                            // Create all directories first
+                            for (const entry of dirs) {
+                                const targetDir = path.join(finalSiteDir, entry.entryName);
+                                await fs.promises.mkdir(targetDir, { recursive: true });
+                            }
+                            
+                            // Extract files in parallel (batched)
+                            let processed = 0;
+                            const total = files.length;
+                            
+                            for (let i = 0; i < files.length; i += PARALLEL_EXTRACT_LIMIT) {
+                                const batch = files.slice(i, i + PARALLEL_EXTRACT_LIMIT);
+                                
+                                await Promise.all(batch.map(async (entry) => {
                                     const targetFile = path.join(finalSiteDir, entry.entryName);
                                     const targetDir = path.dirname(targetFile);
-                                    fs.mkdirSync(targetDir, { recursive: true });
-                                    fs.writeFileSync(targetFile, entry.getData());
-                                }
+                                    
+                                    // Ensure parent directory exists
+                                    await fs.promises.mkdir(targetDir, { recursive: true });
+                                    
+                                    // Write file with chunking for large files
+                                    const data = entry.getData();
+                                    if (data.length > NETWORK_WRITE_CHUNK_SIZE) {
+                                        // Use stream for large files
+                                        const writeStream = fs.createWriteStream(targetFile, {
+                                            highWaterMark: NETWORK_WRITE_CHUNK_SIZE
+                                        });
+                                        
+                                        await new Promise((resolve, reject) => {
+                                            let offset = 0;
+                                            
+                                            const writeNext = () => {
+                                                const chunk = data.slice(offset, offset + NETWORK_WRITE_CHUNK_SIZE);
+                                                if (chunk.length === 0) {
+                                                    writeStream.end();
+                                                    return;
+                                                }
+                                                
+                                                offset += chunk.length;
+                                                
+                                                if (!writeStream.write(chunk)) {
+                                                    writeStream.once('drain', writeNext);
+                                                } else {
+                                                    setImmediate(writeNext);
+                                                }
+                                            };
+                                            
+                                            writeStream.on('finish', resolve);
+                                            writeStream.on('error', reject);
+                                            writeNext();
+                                        });
+                                    } else {
+                                        // Write small files directly
+                                        await fs.promises.writeFile(targetFile, data);
+                                    }
+                                    
+                                    processed++;
+                                }));
+                                
+                                const progress = 40 + Math.floor((processed / total) * 40);
+                                setJob(jobId, { progress });
                             }
                         });
                         
-                        await safeRm(reqData.zipPath);
+                        // Delete ZIP after successful extraction
+                        await safeRm(zipPath);
+                        setJob(jobId, { progress: 85 });
                     } else {
+                        // No file uploaded, create default index.html
                         await withRetries(() => 
                             fs.promises.writeFile(path.join(finalSiteDir, 'index.html'), '<h1>Hello World</h1>')
                         );
+                        setJob(jobId, { progress: 75 });
                     }
 
                     extractSuccess = true;
@@ -437,19 +548,22 @@ app.post('/api/sites/deploy', upload.single('file'), async (req, res) => {
                     retryCount += 1;
                     
                     if (retryCount > DEPLOY_RETRY_COUNT) {
+                        // Cleanup: hapus folder project yang gagal
+                        console.error(`[deploy] Job ${jobId} FAILED after ${DEPLOY_RETRY_COUNT + 1} attempts, cleaning up...`);
                         await safeRm(finalSiteDir);
-                        if (reqData.zipPath) await safeRm(reqData.zipPath);
                         throw new Error(`Deployment failed after ${DEPLOY_RETRY_COUNT + 1} attempts: ${err.message}`);
                     }
 
+                    // Exponential backoff with jitter
                     const jitter = Math.floor(Math.random() * 100);
                     const delay = Math.min(5000, DEPLOY_RETRY_BASE_DELAY_MS * (2 ** retryCount) + jitter);
+                    setJob(jobId, { phase: `retrying (${retryCount}/${DEPLOY_RETRY_COUNT})`, progress: 15 + (retryCount * 5) });
                     await sleep(delay);
                 }
             }
 
             // Save to database
-            setJob(jobId, { phase: 'saving' });
+            setJob(jobId, { phase: 'saving', progress: 90 });
             const hasDb = reqData.needsDatabase === 'true' || !!reqData.attachedDatabaseId;
             const siteId = `s_${Date.now()}`;
 
@@ -475,7 +589,7 @@ app.post('/api/sites/deploy', upload.single('file'), async (req, res) => {
                 hasDatabase: hasDb,
             };
 
-            setJob(jobId, { status: 'completed', phase: 'done', result: { site } });
+            setJob(jobId, { status: 'completed', phase: 'done', progress: 100, result: { site } });
         });
 
         // Return immediately with job ID
@@ -731,11 +845,10 @@ app.put('/api/admin/payments/:id/verify', async (req, res) => {
 
 // Payment proof upload endpoint
 app.post('/api/payments', upload.single('proof'), async (req, res) => {
-    const { userId, plan, amount } = req.body;
+    const { userId, plan, amount, method } = req.body;
     const proofFile = req.file;
 
-    if (!userId || !plan || !amount) {
-        if (proofFile && proofFile.path) await safeRm(proofFile.path);
+    if (!userId || !plan || !amount || !method) {
         return res.status(400).json({ message: 'Missing required fields' });
     }
 
@@ -746,7 +859,6 @@ app.post('/api/payments', upload.single('proof'), async (req, res) => {
     try {
         const [users] = await db.execute('SELECT username FROM users WHERE id = ?', [userId]);
         if (users.length === 0) {
-            if (proofFile && proofFile.path) await safeRm(proofFile.path);
             return res.status(404).json({ message: 'User not found' });
         }
         const username = users[0].username;
@@ -761,16 +873,16 @@ app.post('/api/payments', upload.single('proof'), async (req, res) => {
         const filename = `proof_${plan}_${timestamp}${fileExt}`;
         const finalPath = path.join(userProofDir, filename);
 
-        // Move file from temp to final location
-        await withRetries(() => fs.promises.rename(proofFile.path, finalPath));
+        // Write buffer directly to file (memoryStorage)
+        await withRetries(() => fs.promises.writeFile(finalPath, proofFile.buffer));
 
         // Store relative path in database (username/filename)
         const relativeProofPath = `${username}/${filename}`;
         const paymentId = `pay_${timestamp}`;
 
         await db.execute(
-            'INSERT INTO payments (id, user_id, plan, amount, proof_url, status, created_at) VALUES (?, ?, ?, ?, ?, ?, NOW())',
-            [paymentId, userId, plan, amount, relativeProofPath, 'PENDING']
+            'INSERT INTO payments (id, user_id, plan, amount, method, proof_url, status, date) VALUES (?, ?, ?, ?, ?, ?, ?, NOW())',
+            [paymentId, userId, plan, amount, method, relativeProofPath, 'PENDING']
         );
 
         const payment = {
@@ -778,6 +890,7 @@ app.post('/api/payments', upload.single('proof'), async (req, res) => {
             userId,
             plan,
             amount: parseFloat(amount),
+            method,
             proofUrl: relativeProofPath,
             status: 'PENDING',
             createdAt: new Date(),
@@ -786,7 +899,6 @@ app.post('/api/payments', upload.single('proof'), async (req, res) => {
         res.json(payment);
     } catch (err) {
         console.error('[payment] Error:', err);
-        if (proofFile && proofFile.path) await safeRm(proofFile.path);
         res.status(500).json({ message: err.message || 'Payment submission failed' });
     }
 });
@@ -809,7 +921,7 @@ app.get('/api/payments/history/:userId', async (req, res) => {
     const { userId } = req.params;
     try {
         const [payments] = await db.execute(
-            'SELECT id, user_id as userId, plan, amount, proof_url as proofUrl, status, created_at as createdAt FROM payments WHERE user_id = ? ORDER BY created_at DESC',
+            'SELECT id, user_id as userId, plan, amount, method, proof_url as proofUrl, status, date as createdAt FROM payments WHERE user_id = ? ORDER BY date DESC',
             [userId]
         );
         res.json(payments);
@@ -929,6 +1041,644 @@ app.delete('/api/domains/:id', async (req, res) => {
     await db.execute('DELETE FROM domains WHERE id = ?', [req.params.id]);
     res.json({ success: true });
 });
+
+// ========================================
+// Terminal Command Execution (SSH)
+// ========================================
+
+// Execute single terminal command via SSH
+app.post('/api/sites/:id/execute', async (req, res) => {
+  try {
+    const siteId = req.params.id;
+    const { command } = req.body;
+
+    if (!command) {
+      return res.status(400).json({ success: false, error: 'Command is required' });
+    }
+
+    // Get site info untuk menentukan framework dan subdomain
+    const [sites] = await db.execute('SELECT * FROM sites WHERE id = ?', [siteId]);
+    if (sites.length === 0) {
+      return res.status(404).json({ success: false, error: 'Site not found' });
+    }
+
+    const site = sites[0];
+    const framework = site.framework;
+    const subdomain = site.subdomain;
+    
+    // Get username untuk path structure
+    const [users] = await db.execute('SELECT username FROM users WHERE id = ?', [site.user_id]);
+    if (users.length === 0) {
+      return res.status(404).json({ success: false, error: 'User not found' });
+    }
+    const username = users[0].username;
+
+    // Untuk Laravel, gunakan SSH
+    if (framework === 'Laravel') {
+      const sshConfig = {
+        host: process.env.SSH_HOST || 'synology-ssh.kolab.top',
+        port: parseInt(process.env.SSH_PORT || '22'),
+        username: process.env.SSH_USER || 'Aslabkolab',
+        password: process.env.SSH_PASSWORD
+      };
+
+      if (process.env.SSH_PRIVATE_KEY_PATH) {
+        sshConfig.privateKey = require('fs').readFileSync(process.env.SSH_PRIVATE_KEY_PATH);
+        delete sshConfig.password;
+      }
+
+      // Whitelisted commands untuk keamanan
+      const allowedCommands = [
+        '/usr/local/bin/php82 /usr/local/bin/composer install',
+        '/usr/local/bin/php82 /usr/local/bin/composer update',
+        'npm install',
+        'npm run build',
+        'npm run dev',
+        '/usr/local/bin/php82 artisan migrate',
+        '/usr/local/bin/php82 artisan db:seed',
+        '/usr/local/bin/php82 artisan storage:link',
+        '/usr/local/bin/php82 artisan cache:clear',
+        '/usr/local/bin/php82 artisan config:cache',
+        '/usr/local/bin/php82 artisan route:cache',
+        '/usr/local/bin/php82 artisan view:clear',
+        '/usr/local/bin/php82 artisan optimize'
+      ];
+
+      const isAllowed = allowedCommands.some(allowed => 
+        command.trim().startsWith(allowed) || command.includes(allowed)
+      );
+
+      if (!isAllowed) {
+        return res.status(403).json({ 
+          success: false, 
+          error: 'Command not allowed. Only whitelisted Laravel commands are permitted.' 
+        });
+      }
+
+      // Working directory untuk project ini
+      // Path mapping: Windows \\100.90.80.70\web\project\kohost_users = Synology /var/services/web/project/kohost_users
+      // Struktur: /var/services/web/project/kohost_users/{username}/{project_name}
+      // Project name adalah bagian sebelum domain (misal: tes.kolabpanel.com -> tes)
+      const projectName = subdomain.split('.')[0]; // Extract 'tes' from 'tes.kolabpanel.com'
+      const workingDir = `/var/services/web/project/kohost_users/${username}/${projectName}`;
+      
+      // Replace $USERNAME placeholder dengan username sebenarnya
+      let processedCommand = command.replace('$USERNAME', username);
+      
+      // Untuk command ls/pwd/find, cd ke working dir terlebih dahulu (jika bukan absolute path)
+      const isAbsoluteCommand = processedCommand.includes('/var/') || processedCommand.includes('/volume');
+      const isPwdCommand = processedCommand.trim() === 'pwd';
+      
+      let fullCommand;
+      if (isAbsoluteCommand) {
+        fullCommand = processedCommand; // ls -la /absolute/path tetap standalone
+      } else if (isPwdCommand) {
+        fullCommand = `cd ${workingDir} 2>/dev/null && pwd || echo "Directory not found: ${workingDir}"`; // pwd harus cd dulu, handle error
+      } else {
+        fullCommand = `cd ${workingDir} 2>/dev/null && ${processedCommand} || echo "Directory not found: ${workingDir}"`; // command lain perlu cd, handle error
+      }
+
+      console.log(`[ssh] Executing on ${sshConfig.host}: ${fullCommand}`);
+
+      const result = await executeSSHCommand(sshConfig, fullCommand);
+      
+      return res.json({
+        success: result.exitCode === 0,
+        output: {
+          stdout: result.stdout,
+          stderr: result.stderr,
+          exitCode: result.exitCode
+        }
+      });
+
+    } else {
+      // Untuk framework lain (React, Next.js, Node.js), bisa ditambahkan logic lain
+      // Saat ini return error
+      return res.status(400).json({ 
+        success: false, 
+        error: `Command execution not yet supported for ${framework}` 
+      });
+    }
+
+  } catch (error) {
+    console.error('[execute] Error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Execute terminal command dengan streaming output (SSE)
+app.post('/api/sites/:id/execute-stream', async (req, res) => {
+  try {
+    const siteId = req.params.id;
+    const { command } = req.body;
+
+    if (!command) {
+      return res.status(400).json({ success: false, error: 'Command is required' });
+    }
+
+    // Get site info
+    const [sites] = await db.execute('SELECT * FROM sites WHERE id = ?', [siteId]);
+    if (sites.length === 0) {
+      return res.status(404).json({ success: false, error: 'Site not found' });
+    }
+
+    const site = sites[0];
+    const framework = site.framework;
+    
+    // Get username
+    const [users] = await db.execute('SELECT username FROM users WHERE id = ?', [site.user_id]);
+    if (users.length === 0) {
+      return res.status(404).json({ success: false, error: 'User not found' });
+    }
+    const username = users[0].username;
+    const projectName = site.subdomain.split('.')[0];
+
+    // Setup SSE
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    res.flushHeaders();
+
+    const sendEvent = (type, data) => {
+      res.write(`event: ${type}\n`);
+      res.write(`data: ${JSON.stringify(data)}\n\n`);
+    };
+
+    if (framework === 'Laravel') {
+      const sshConfig = {
+        host: process.env.SSH_HOST || '100.90.80.70',
+        port: parseInt(process.env.SSH_PORT || '22'),
+        username: process.env.SSH_USER || 'Aslabkolab',
+        password: process.env.SSH_PASSWORD
+      };
+
+      if (process.env.SSH_PRIVATE_KEY_PATH) {
+        sshConfig.privateKey = require('fs').readFileSync(process.env.SSH_PRIVATE_KEY_PATH);
+        delete sshConfig.password;
+      }
+
+      // Whitelist check
+      const allowedCommands = [
+        '/usr/local/bin/php82 /usr/local/bin/composer install',
+        '/usr/local/bin/php82 /usr/local/bin/composer update',
+        'export PATH=/usr/local/bin:$PATH && npm install',
+        'export PATH=/usr/local/bin:$PATH && npm run build',
+        'export PATH=/usr/local/bin:$PATH && npm run dev',
+        '/usr/local/bin/php82 artisan migrate',
+        '/usr/local/bin/php82 artisan db:seed',
+        '/usr/local/bin/php82 artisan storage:link',
+        '/usr/local/bin/php82 artisan cache:clear',
+        '/usr/local/bin/php82 artisan config:cache',
+        '/usr/local/bin/php82 artisan route:cache',
+        '/usr/local/bin/php82 artisan view:clear',
+        '/usr/local/bin/php82 artisan optimize'
+      ];
+
+      const isAllowed = allowedCommands.some(allowed => 
+        command.trim().startsWith(allowed) || command.includes(allowed)
+      );
+
+      if (!isAllowed) {
+        sendEvent('error', { message: 'Command not allowed' });
+        return res.end();
+      }
+
+      const workingDir = `/var/services/web/project/kohost_users/${username}/${projectName}`;
+      let processedCommand = command.replace('$USERNAME', username);
+      
+      const isAbsoluteCommand = processedCommand.includes('/var/') || processedCommand.includes('/volume');
+      const isPwdCommand = processedCommand.trim() === 'pwd';
+      
+      let fullCommand;
+      if (isAbsoluteCommand) {
+        fullCommand = processedCommand;
+      } else if (isPwdCommand) {
+        fullCommand = `cd ${workingDir} 2>/dev/null && pwd || echo "Directory not found: ${workingDir}"`;
+      } else {
+        fullCommand = `cd ${workingDir} 2>/dev/null && ${processedCommand} || echo "Directory not found: ${workingDir}"`;
+      }
+
+      // Execute dengan streaming
+      await executeSSHCommandStreaming(sshConfig, fullCommand, sendEvent);
+      
+      sendEvent('done', { success: true });
+      res.end();
+    } else {
+      sendEvent('error', { message: `Command execution not yet supported for ${framework}` });
+      res.end();
+    }
+
+  } catch (error) {
+    console.error('[execute-stream] Error:', error);
+    res.write(`event: error\n`);
+    res.write(`data: ${JSON.stringify({ message: error.message })}\n\n`);
+    res.end();
+  }
+});
+
+// Helper function untuk execute SSH command dengan streaming output
+async function executeSSHCommandStreaming(sshConfig, command, sendEvent) {
+  return new Promise((resolve, reject) => {
+    const conn = new Client();
+
+    conn.on('ready', () => {
+      console.log('[ssh-stream] Connection established');
+      sendEvent('log', { type: 'info', text: 'SSH connection established' });
+      
+      conn.exec(command, (err, stream) => {
+        if (err) {
+          conn.end();
+          return reject(err);
+        }
+
+        stream.on('close', (code) => {
+          console.log(`[ssh-stream] Command exited with code ${code}`);
+          sendEvent('exit', { code });
+          conn.end();
+          resolve({ exitCode: code });
+        });
+
+        // Stream stdout line by line
+        let stdoutBuffer = '';
+        stream.on('data', (data) => {
+          stdoutBuffer += data.toString();
+          const lines = stdoutBuffer.split('\n');
+          stdoutBuffer = lines.pop(); // Keep incomplete line in buffer
+          
+          lines.forEach(line => {
+            if (line.trim()) {
+              sendEvent('log', { type: 'stdout', text: line });
+            }
+          });
+        });
+
+        // Stream stderr line by line
+        let stderrBuffer = '';
+        stream.stderr.on('data', (data) => {
+          stderrBuffer += data.toString();
+          const lines = stderrBuffer.split('\n');
+          stderrBuffer = lines.pop();
+          
+          lines.forEach(line => {
+            if (line.trim()) {
+              sendEvent('log', { type: 'stderr', text: line });
+            }
+          });
+        });
+
+        // Send remaining buffer on close
+        stream.on('close', () => {
+          if (stdoutBuffer.trim()) {
+            sendEvent('log', { type: 'stdout', text: stdoutBuffer });
+          }
+          if (stderrBuffer.trim()) {
+            sendEvent('log', { type: 'stderr', text: stderrBuffer });
+          }
+        });
+      });
+    });
+
+    conn.on('error', (err) => {
+      console.error('[ssh-stream] Connection error:', err);
+      reject(err);
+    });
+
+    conn.connect(sshConfig);
+  });
+}
+
+// Helper function untuk execute single SSH command
+async function executeSSHCommand(sshConfig, command) {
+  return new Promise((resolve, reject) => {
+    const conn = new Client();
+    let stdout = '';
+    let stderr = '';
+    let exitCode = null;
+
+    conn.on('ready', () => {
+      console.log('[ssh] Connection established');
+      
+      conn.exec(command, (err, stream) => {
+        if (err) {
+          conn.end();
+          return reject(err);
+        }
+
+        stream.on('close', (code, signal) => {
+          exitCode = code;
+          console.log(`[ssh] Command exited with code ${code}`);
+          if (stdout) console.log('[ssh] STDOUT:', stdout);
+          if (stderr) console.log('[ssh] STDERR:', stderr);
+          conn.end();
+          resolve({ stdout, stderr, exitCode });
+        });
+
+        stream.on('data', (data) => {
+          stdout += data.toString();
+        });
+
+        stream.stderr.on('data', (data) => {
+          stderr += data.toString();
+        });
+      });
+    });
+
+    conn.on('error', (err) => {
+      console.error('[ssh] Connection error:', err);
+      reject(err);
+    });
+
+    conn.connect(sshConfig);
+  });
+}
+
+// ========================================
+// Laravel Deployment Endpoints (SSH)
+// ========================================
+
+// Laravel setup via SSH (composer, npm, artisan commands on Synology)
+app.post('/api/sites/:id/laravel-setup', async (req, res) => {
+    const { id } = req.params;
+    const { steps } = req.body; // ['composer', 'npm', 'storage-link', 'build', 'migrate']
+    
+    try {
+        const [sites] = await db.execute('SELECT * FROM sites WHERE id = ?', [id]);
+        if (!sites.length) return res.status(404).json({ message: 'Site not found' });
+        
+        const site = sites[0];
+        const [users] = await db.execute('SELECT username FROM users WHERE id = ?', [site.user_id]);
+        const username = users[0].username;
+        
+        // Path di Synology (via SSH)
+        const remotePath = `/volume1/web/project/kohost_users/${username}/${site.subdomain}`;
+        
+        console.log(`[laravel-setup] Site: ${site.subdomain}, Path: ${remotePath}, Steps:`, steps);
+        
+        // Execute commands via SSH
+        const output = await executeSSHCommands(remotePath, steps);
+        
+        res.json({ success: true, output });
+    } catch (err) {
+        console.error('[laravel-setup] Error:', err);
+        res.status(500).json({ message: err.message });
+    }
+});
+
+// Database migration endpoint (via local MySQL Laragon)
+app.post('/api/sites/:id/migrate-db', async (req, res) => {
+    const { id } = req.params;
+    const { sqlFile } = req.body; // Base64 encoded SQL file
+    
+    try {
+        const [sites] = await db.execute('SELECT * FROM sites WHERE id = ?', [id]);
+        if (!sites.length) return res.status(404).json({ message: 'Site not found' });
+        
+        const site = sites[0];
+        const [users] = await db.execute('SELECT username FROM users WHERE id = ?', [site.user_id]);
+        const username = users[0].username;
+        
+        // Create database for this site
+        const sanitizedSubdomain = site.subdomain.replace(/[^a-z0-9]/gi, '_');
+        const sanitizedUsername = username.replace(/[^a-z0-9]/gi, '');
+        const dbName = `${sanitizedSubdomain}_${sanitizedUsername}`;
+        
+        console.log(`[migrate-db] Creating database: ${dbName}`);
+        
+        await db.execute(`CREATE DATABASE IF NOT EXISTS \`${dbName}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci`);
+        
+        // Import SQL file if provided
+        if (sqlFile) {
+            const sqlContent = Buffer.from(sqlFile, 'base64').toString('utf-8');
+            const statements = sqlContent.split(';').filter(s => s.trim());
+            
+            await db.execute(`USE \`${dbName}\``);
+            
+            for (const stmt of statements) {
+                if (stmt.trim()) {
+                    try {
+                        await db.execute(stmt);
+                    } catch (err) {
+                        console.error('[migrate-db] SQL Error:', err.message);
+                        // Continue with other statements
+                    }
+                }
+            }
+            
+            console.log(`[migrate-db] Imported ${statements.length} SQL statements`);
+        }
+        
+        res.json({ 
+            success: true, 
+            database: dbName,
+            host: 'localhost',
+            username: 'root',
+            password: ''
+        });
+    } catch (err) {
+        console.error('[migrate-db] Error:', err);
+        res.status(500).json({ message: err.message });
+    }
+});
+
+// SSH Command Executor
+async function executeSSHCommands(workDir, steps) {
+    return new Promise((resolve, reject) => {
+        const conn = new Client();
+        const outputs = [];
+        
+        conn.on('ready', () => {
+            const commands = [];
+            
+            // Whitelist commands only for security
+            if (steps.includes('composer')) {
+                commands.push(`cd ${workDir} && composer install --no-dev --optimize-autoloader 2>&1`);
+            }
+            if (steps.includes('npm')) {
+                commands.push(`cd ${workDir} && npm install 2>&1`);
+            }
+            if (steps.includes('storage-link')) {
+                commands.push(`cd ${workDir} && php artisan storage:link 2>&1`);
+            }
+            if (steps.includes('build')) {
+                commands.push(`cd ${workDir} && npm run build 2>&1`);
+            }
+            if (steps.includes('migrate')) {
+                // Note: This runs artisan migrate on remote, but DB should be local
+                commands.push(`cd ${workDir} && php artisan migrate --force 2>&1`);
+            }
+            if (steps.includes('cache-clear')) {
+                commands.push(`cd ${workDir} && php artisan cache:clear && php artisan config:clear && php artisan route:clear && php artisan view:clear 2>&1`);
+            }
+            
+            if (commands.length === 0) {
+                conn.end();
+                return resolve([{ message: 'No commands to execute' }]);
+            }
+            
+            // Execute sequentially
+            executeCommandsSequentially(conn, commands, 0, outputs, () => {
+                conn.end();
+                resolve(outputs);
+            }, reject);
+        });
+        
+        conn.on('error', (err) => {
+            console.error('[ssh] Connection error:', err);
+            reject(err);
+        });
+        
+        const sshConfig = {
+            host: process.env.SSH_HOST,
+            port: parseInt(process.env.SSH_PORT || '22'),
+            username: process.env.SSH_USER,
+            readyTimeout: 30000,
+        };
+        
+        // Use password or key
+        if (process.env.SSH_PRIVATE_KEY_PATH && fs.existsSync(process.env.SSH_PRIVATE_KEY_PATH)) {
+            sshConfig.privateKey = fs.readFileSync(process.env.SSH_PRIVATE_KEY_PATH);
+        } else if (process.env.SSH_PASSWORD) {
+            sshConfig.password = process.env.SSH_PASSWORD;
+        } else {
+            return reject(new Error('SSH credentials not configured'));
+        }
+        
+        console.log(`[ssh] Connecting to ${sshConfig.username}@${sshConfig.host}:${sshConfig.port}`);
+        conn.connect(sshConfig);
+    });
+}
+
+function executeCommandsSequentially(conn, commands, index, outputs, onComplete, onError) {
+    if (index >= commands.length) {
+        return onComplete();
+    }
+    
+    const cmd = commands[index];
+    console.log(`[ssh] Executing [${index + 1}/${commands.length}]: ${cmd}`);
+    
+    conn.exec(cmd, (err, stream) => {
+        if (err) {
+            console.error('[ssh] Exec error:', err);
+            return onError(err);
+        }
+        
+        let stdout = '';
+        let stderr = '';
+        
+        stream.on('close', (code) => {
+            const output = {
+                command: cmd,
+                stdout: stdout.trim(),
+                stderr: stderr.trim(),
+                exitCode: code,
+                success: code === 0
+            };
+            
+            outputs.push(output);
+            console.log(`[ssh] Command finished with exit code ${code}`);
+            
+            if (code !== 0) {
+                console.error(`[ssh] Command failed: ${stderr || stdout}`);
+                return onError(new Error(`Command failed with exit code ${code}: ${stderr || stdout}`));
+            }
+            
+            // Continue to next command
+            executeCommandsSequentially(conn, commands, index + 1, outputs, onComplete, onError);
+        });
+        
+        stream.on('data', (data) => {
+            const text = data.toString();
+            stdout += text;
+            console.log('[ssh] stdout:', text);
+        });
+        
+        stream.stderr.on('data', (data) => {
+            const text = data.toString();
+            stderr += text;
+            console.error('[ssh] stderr:', text);
+        });
+    });
+}
+
+// phpMyAdmin redirect endpoint - ensure MySQL user exists
+app.get('/phpmyadmin', async (req, res) => {
+    try {
+        // Get user from token (if authenticated)
+        const token = req.headers.authorization?.split(' ')[1] || req.query.token;
+        
+        if (token) {
+            // Verify token and ensure MySQL user exists
+            const decoded = jwt.verify(token, SECRET_KEY);
+            
+            if (decoded && decoded.userId) {
+                const [users] = await db.execute('SELECT id, username FROM users WHERE id = ?', [decoded.userId]);
+                
+                if (users.length > 0) {
+                    const user = users[0];
+                    const masterDbUser = `sql_${user.username.toLowerCase().replace(/[^a-z0-9]/g, '')}`;
+                    const masterDbPass = `kp_${user.id.substring(0,4)}@${user.username.substring(0,3).toUpperCase()}#88`;
+                    
+                    // Ensure MySQL user exists with proper grants (async, don't wait)
+                    ensureMySQLUser(masterDbUser, masterDbPass, user.username).catch(err => {
+                        console.error('[mysql] Error ensuring user:', err.message);
+                    });
+                }
+            }
+        }
+    } catch (err) {
+        console.error('[phpmyadmin] Token error:', err.message);
+    }
+    
+    // Always redirect to phpMyAdmin (user logs in manually with credentials from page)
+    const phpmyadminUrl = process.env.PHPMYADMIN_URL || 'http://localhost/phpmyadmin';
+    res.redirect(phpmyadminUrl);
+});
+
+// Helper function to ensure MySQL user exists
+async function ensureMySQLUser(username, password, actualUsername) {
+    try {
+        // Check if user exists
+        const [existing] = await db.execute(
+            "SELECT User FROM mysql.user WHERE User = ?",
+            [username]
+        );
+
+        if (existing.length === 0) {
+            // Create user
+            await db.execute(
+                `CREATE USER '${username}'@'localhost' IDENTIFIED BY '${password}'`
+            );
+            console.log(`[mysql] Created user: ${username}`);
+        } else {
+            // Update password if user exists
+            await db.execute(
+                `ALTER USER '${username}'@'localhost' IDENTIFIED BY '${password}'`
+            );
+        }
+
+        // Grant privileges to all databases matching pattern
+        const sanitizedUsername = actualUsername.toLowerCase().replace(/[^a-z0-9]/g, '');
+        
+        // Grant to databases with pattern: *_{username}_*
+        const dbPattern = `%_${sanitizedUsername}_%`;
+        await db.execute(
+            `GRANT ALL PRIVILEGES ON \`${dbPattern}\`.* TO '${username}'@'localhost'`
+        );
+
+        // Also grant to main user database
+        const mainDbName = `sql_${sanitizedUsername}`;
+        await db.execute(
+            `GRANT ALL PRIVILEGES ON \`${mainDbName}\`.* TO '${username}'@'localhost'`
+        );
+
+        await db.execute('FLUSH PRIVILEGES');
+        console.log(`[mysql] Granted privileges to ${username} for databases: ${dbPattern}, ${mainDbName}`);
+        
+    } catch (err) {
+        console.error('[mysql] Error ensuring user:', err.message);
+        throw err;
+    }
+}
 
 app.listen(PORT, async () => {
     await initDB();

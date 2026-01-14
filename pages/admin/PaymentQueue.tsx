@@ -28,7 +28,8 @@ export const PaymentQueue: React.FC = () => {
             // Return a realistic looking receipt placeholder for the mock
             return "https://images.unsplash.com/photo-1554224155-8d04cb21cd6c?q=80&w=1000&auto=format&fit=crop";
         }
-        return url; // In real app, this would be the uploaded file URL
+        // Convert relative path (username/filename) to API endpoint URL
+        return `http://localhost:5000/api/payments/proof/${url}`;
     };
 
     return (

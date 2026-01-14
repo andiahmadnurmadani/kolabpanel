@@ -1,17 +1,23 @@
-import React, { useState } from 'react';
+import React, { useState, useRef } from 'react';
 import { Card } from '../../components/Shared';
 import { api } from '../../services/api';
 import { User } from '../../types';
-import { CreditCard, Calendar, User as UserIcon, Mail, Key, Lock, Check, AlertTriangle, ShieldCheck, Send, Loader2, CheckCircle, XCircle, Crown, Zap, Clock } from 'lucide-react';
+import { CreditCard, Calendar, User as UserIcon, Mail, Key, Lock, Check, AlertTriangle, ShieldCheck, Send, Loader2, CheckCircle, XCircle, Crown, Zap, Clock, Camera, Upload, X, AlertOctagon } from 'lucide-react';
 
 interface UserProfileProps {
   user: User;
+  onUpdate?: () => Promise<void>;
 }
 
-export const UserProfile: React.FC<UserProfileProps> = ({ user }) => {
+export const UserProfile: React.FC<UserProfileProps> = ({ user, onUpdate }) => {
   const [loading, setLoading] = useState(false);
-  const [formData, setFormData] = useState({ username: user.username, email: user.email });
+  const [formData, setFormData] = useState({ 
+      username: user.username, 
+      email: user.email,
+      avatar: user.avatar || 'https://picsum.photos/200'
+  });
   const [passData, setPassData] = useState({ current: '', new: '', confirm: '' });
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Verification State
   const [otpInput, setOtpInput] = useState('');
@@ -20,11 +26,21 @@ export const UserProfile: React.FC<UserProfileProps> = ({ user }) => {
   const [sendingCode, setSendingCode] = useState(false);
   const [verifyStatus, setVerifyStatus] = useState<'IDLE' | 'SUCCESS' | 'ERROR'>('IDLE');
 
+  // Feedback Modal State
+  const [feedback, setFeedback] = useState<{
+      isOpen: boolean;
+      type: 'success' | 'error';
+      title: string;
+      message: string;
+  }>({ isOpen: false, type: 'success', title: '', message: '' });
+
   const TEST_OTP = '123456'; // Master code for testing
 
   const nextBillingDate = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
   
   const isEmailChanged = formData.email !== user.email;
+
+  const closeFeedback = () => setFeedback(prev => ({ ...prev, isOpen: false }));
 
   const handleSendCode = async () => {
       if (!isEmailChanged) return;
@@ -41,9 +57,32 @@ export const UserProfile: React.FC<UserProfileProps> = ({ user }) => {
       setSendingCode(false);
       setOtpInput('');
       
-      console.log(`[SYSTEM] Verification Code sent to ${formData.email}: ${code}`);
-      // Inform user about the test code
-      alert(`[SIMULATION] Code sent to ${formData.email}: ${code}.\n\n(Tip: For testing, you can also use the code '${TEST_OTP}' to verify successfully)`);
+      // For demo purposes, we show the code in the modal or console, but here let's just use alert for the CODE only as it's a simulation
+      // In a real app, this goes to email.
+      alert(`[SIMULATION] Verification Code sent to ${formData.email}: ${code}\n\n(Tip: You can also use '${TEST_OTP}')`);
+  };
+
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+        // Validate size (max 2MB)
+        if (file.size > 2 * 1024 * 1024) {
+            setFeedback({
+                isOpen: true,
+                type: 'error',
+                title: 'File Too Large',
+                message: 'The image size exceeds 2MB. Please upload a smaller image.'
+            });
+            return;
+        }
+
+        // Convert to Base64 for mock storage
+        const reader = new FileReader();
+        reader.onloadend = () => {
+            setFormData(prev => ({ ...prev, avatar: reader.result as string }));
+        };
+        reader.readAsDataURL(file);
+    }
   };
 
   const handleUpdateClick = async (e: React.FormEvent) => {
@@ -53,7 +92,12 @@ export const UserProfile: React.FC<UserProfileProps> = ({ user }) => {
     // Check if email has changed
     if (isEmailChanged) {
         if (!codeSent) {
-            alert("Please click 'Send Code' to verify your new email address.");
+            setFeedback({
+                isOpen: true,
+                type: 'error',
+                title: 'Verification Required',
+                message: "Please click 'Send Code' to verify your new email address before saving."
+            });
             return;
         }
 
@@ -84,9 +128,30 @@ export const UserProfile: React.FC<UserProfileProps> = ({ user }) => {
     setLoading(true);
     try {
         await api.auth.updateProfile(user.id, data);
-        // alert("Profile updated successfully!"); // Optional: reduced alerts for smoother UX
-    } catch (e) {
-        alert("Failed to update profile");
+        if (onUpdate) {
+            await onUpdate();
+        } 
+        
+        setFeedback({
+            isOpen: true,
+            type: 'success',
+            title: 'Profile Updated',
+            message: 'Your account information has been successfully updated.'
+        });
+
+    } catch (e: any) {
+        console.error("Profile Update Error:", e);
+        let msg = "Failed to update profile. Please try again.";
+        if (e.name === 'QuotaExceededError' || e.message?.toLowerCase().includes('quota')) {
+             msg = "Storage Limit Reached: The image is too large for the local browser storage. Please try a smaller image.";
+        }
+        
+        setFeedback({
+            isOpen: true,
+            type: 'error',
+            title: 'Update Failed',
+            message: msg
+        });
     } finally {
         setLoading(false);
     }
@@ -95,32 +160,108 @@ export const UserProfile: React.FC<UserProfileProps> = ({ user }) => {
   const handlePasswordUpdate = async (e: React.FormEvent) => {
     e.preventDefault();
     if (passData.new !== passData.confirm) {
-        alert("New passwords do not match");
+        setFeedback({
+            isOpen: true,
+            type: 'error',
+            title: 'Password Mismatch',
+            message: "The new password and confirmation password do not match."
+        });
         return;
     }
     if (passData.new.length < 6) {
-        alert("Password must be at least 6 characters");
+        setFeedback({
+            isOpen: true,
+            type: 'error',
+            title: 'Weak Password',
+            message: "Password must be at least 6 characters long."
+        });
         return;
     }
+
     setLoading(true);
     try {
         await api.auth.changePassword(user.id, passData.current, passData.new);
-        alert("Password changed successfully");
+        setFeedback({
+            isOpen: true,
+            type: 'success',
+            title: 'Password Changed',
+            message: 'Your password has been securely updated. Please use the new password for your next login.'
+        });
         setPassData({ current: '', new: '', confirm: '' });
     } catch (err: any) {
-        alert(err.message || "Failed to change password");
+        setFeedback({
+            isOpen: true,
+            type: 'error',
+            title: 'Change Failed',
+            message: err.message || "The current password provided is incorrect."
+        });
     } finally {
         setLoading(false);
     }
   };
 
   return (
-    <div className="max-w-4xl mx-auto grid grid-cols-1 md:grid-cols-3 gap-6 relative">
+    <div className="max-w-4xl mx-auto grid grid-cols-1 md:grid-cols-3 gap-6 relative animate-in fade-in duration-300">
+      
+      {/* FEEDBACK POPUP MODAL */}
+      {feedback.isOpen && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4">
+            <div className="absolute inset-0 bg-slate-900/60 backdrop-blur-sm transition-opacity" onClick={closeFeedback} />
+            <div className="relative w-full max-w-sm bg-white rounded-2xl shadow-2xl overflow-hidden animate-in fade-in zoom-in-95 duration-200">
+                <div className={`h-2 w-full ${feedback.type === 'success' ? 'bg-emerald-500' : 'bg-red-500'}`} />
+                <div className="p-6">
+                    <div className="flex items-start gap-4">
+                        <div className={`p-3 rounded-full shrink-0 ${feedback.type === 'success' ? 'bg-emerald-100 text-emerald-600' : 'bg-red-100 text-red-600'}`}>
+                            {feedback.type === 'success' ? <CheckCircle className="w-8 h-8" /> : <AlertOctagon className="w-8 h-8" />}
+                        </div>
+                        <div>
+                            <h3 className="text-lg font-bold text-slate-900">{feedback.title}</h3>
+                            <p className="text-sm text-slate-500 mt-1 leading-relaxed">{feedback.message}</p>
+                        </div>
+                    </div>
+                    <div className="mt-6 flex justify-end">
+                        <button 
+                            onClick={closeFeedback} 
+                            className={`px-5 py-2 rounded-lg font-bold text-sm text-white shadow-md transition-all hover:scale-105 active:scale-95 ${
+                                feedback.type === 'success' 
+                                ? 'bg-emerald-600 hover:bg-emerald-700 shadow-emerald-200' 
+                                : 'bg-slate-900 hover:bg-slate-800'
+                            }`}
+                        >
+                            {feedback.type === 'success' ? 'Great, thanks!' : 'Close'}
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+      )}
+
       <div className="space-y-6">
         <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-6 flex flex-col items-center text-center">
-          <div className="relative mb-4 group"><div className="w-32 h-32 rounded-full overflow-hidden border-4 border-slate-100 shadow-inner"><img src={user.avatar} alt={user.username} className="w-full h-full object-cover" /></div></div>
-          <h2 className="text-xl font-bold text-slate-900">{user.username}</h2>
-          <p className="text-sm text-slate-500 mb-4">{user.email}</p>
+          
+          {/* Avatar Section with Edit Overlay */}
+          <div className="relative mb-4 group cursor-pointer" onClick={() => fileInputRef.current?.click()}>
+              <div className="w-32 h-32 rounded-full overflow-hidden border-4 border-slate-100 shadow-inner relative">
+                  <img src={formData.avatar} alt={formData.username} className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-110" />
+                  <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex flex-col items-center justify-center text-white backdrop-blur-[1px]">
+                      <Camera className="w-8 h-8 mb-1" />
+                      <span className="text-xs font-medium">Change Photo</span>
+                  </div>
+              </div>
+              <div className="absolute bottom-1 right-1 bg-indigo-600 text-white p-2 rounded-full border-2 border-white shadow-sm z-10 group-hover:bg-indigo-700 transition-colors">
+                  <Upload className="w-3.5 h-3.5" />
+              </div>
+          </div>
+          <input 
+              type="file" 
+              ref={fileInputRef} 
+              className="hidden" 
+              accept="image/*"
+              onChange={handleFileChange}
+          />
+
+          <h2 className="text-xl font-bold text-slate-900">{formData.username || user.username}</h2>
+          <p className="text-sm text-slate-500 mb-4">{formData.email || user.email}</p>
         </div>
         
         {/* PREMIUM SUBSCRIPTION CARD */}
@@ -154,21 +295,34 @@ export const UserProfile: React.FC<UserProfileProps> = ({ user }) => {
                  <div className="text-3xl font-extrabold tracking-tight text-white drop-shadow-sm">{user.plan}</div>
             </div>
 
-            {/* Billing Info & Progress */}
-            <div className="relative z-10 bg-black/20 rounded-xl p-4 backdrop-blur-md border border-white/10 shadow-inner">
-                <div className="flex justify-between items-end mb-3">
-                    <div>
-                         <p className="text-xs text-indigo-200 mb-1 flex items-center gap-1.5 font-medium"><Calendar className="w-3.5 h-3.5" /> Next Billing</p>
-                         <p className="text-sm font-bold text-white tracking-wide">{nextBillingDate}</p>
-                    </div>
-                    <div className="text-right">
-                         <p className="text-xs text-indigo-200 mb-1 flex items-center gap-1.5 justify-end font-medium"><Clock className="w-3.5 h-3.5" /> Remaining</p>
-                         <p className="text-sm font-bold text-white">30 Days</p>
-                    </div>
+            {/* Billing Info & Progress - REDESIGNED */}
+            <div className="relative z-10 bg-black/20 rounded-xl p-6 backdrop-blur-md border border-white/10 shadow-inner flex flex-col justify-between min-h-[180px]">
+                {/* Next Billing - Single Line */}
+                <div className="flex items-center justify-between border-b border-white/10 pb-4">
+                     <div className="flex items-center gap-2 text-indigo-100">
+                        <Calendar className="w-4 h-4" />
+                        <span className="text-sm font-medium">Next Billing</span>
+                     </div>
+                     <p className="text-base font-bold text-white tracking-wide">{nextBillingDate}</p>
                 </div>
-                {/* Visual Progress Bar */}
-                <div className="w-full bg-black/30 h-2 rounded-full overflow-hidden border border-white/5">
-                    <div className="bg-gradient-to-r from-emerald-400 to-teal-300 h-full w-[5%] rounded-full shadow-[0_0_10px_rgba(52,211,153,0.5)]"></div>
+
+                <div className="space-y-2 pt-4">
+                     {/* Progress Bar */}
+                    <div className="flex justify-between text-xs text-indigo-200 mb-2">
+                        <span>Cycle Progress</span>
+                        <span className="text-white font-bold">5%</span>
+                    </div>
+                    <div className="w-full bg-black/30 h-3 rounded-full overflow-hidden border border-white/5 relative mb-4">
+                        <div className="bg-gradient-to-r from-emerald-400 to-teal-300 h-full w-[5%] rounded-full shadow-[0_0_10px_rgba(52,211,153,0.5)]"></div>
+                    </div>
+                    
+                    {/* Remaining - Moved Below Bar */}
+                    <div className="flex justify-end pt-1">
+                         <p className="text-xs font-bold text-white flex items-center gap-1.5 bg-white/10 px-3 py-1.5 rounded-lg border border-white/5 shadow-sm">
+                            <Clock className="w-3.5 h-3.5 text-emerald-300" /> 
+                            <span>30 Days Remaining</span>
+                         </p>
+                    </div>
                 </div>
             </div>
         </div>

@@ -52,25 +52,41 @@ const UPLOAD_TEMP = process.env.UPLOAD_TEMP
     ? resolveEnvPath(process.env.UPLOAD_TEMP)
     : path.resolve(__dirname, 'uploads');
 
-const ensureWritableDirSync = (dirPath) => {
+const PAYMENT_PROOF_PATH = process.env.PAYMENT_PROOF_PATH
+    ? resolveEnvPath(process.env.PAYMENT_PROOF_PATH)
+    : path.resolve(__dirname, '..', 'user_billing');
+
+const ensureWritableDirSync = (dirPath, isRemote = false) => {
     fs.mkdirSync(dirPath, { recursive: true });
+    
+    // Skip write test for remote/network paths (UNC paths)
+    if (isRemote) {
+        console.log('[storage] Remote path detected, skipping write test:', dirPath);
+        return;
+    }
+    
     const probe = path.join(dirPath, `.write_test_${Date.now()}_${Math.random().toString(16).slice(2)}`);
     fs.writeFileSync(probe, 'ok');
     fs.unlinkSync(probe);
 };
 
+const isUNCPath = (p) => p.startsWith('\\\\');
+
 try {
-    ensureWritableDirSync(STORAGE_ROOT);
+    ensureWritableDirSync(STORAGE_ROOT, isUNCPath(STORAGE_ROOT));
     ensureWritableDirSync(UPLOAD_TEMP);
+    ensureWritableDirSync(PAYMENT_PROOF_PATH);
 } catch (e) {
     console.error('[storage] Storage path is not writable:', e.message);
     console.error('[storage] STORAGE_ROOT=', process.env.STORAGE_ROOT);
     console.error('[storage] UPLOAD_TEMP=', process.env.UPLOAD_TEMP);
+    console.error('[storage] PAYMENT_PROOF_PATH=', process.env.PAYMENT_PROOF_PATH);
     process.exit(1);
 }
 
 console.log('[storage] STORAGE_ROOT resolved =', STORAGE_ROOT);
 console.log('[storage] UPLOAD_TEMP resolved =', UPLOAD_TEMP);
+console.log('[storage] PAYMENT_PROOF_PATH resolved =', PAYMENT_PROOF_PATH);
 
 const DEPLOY_RETRY_COUNT = 5;
 const DEPLOY_RETRY_BASE_DELAY_MS = 300;
@@ -114,6 +130,48 @@ const withRetries = async (fn) => {
         }
     }
     throw lastErr;
+};
+
+// --- BACKGROUND DEPLOY JOBS ---
+const deployJobs = new Map();
+const deployQueue = [];
+let activeDeployJobs = 0;
+const DEPLOY_JOB_MAX_CONCURRENT = 2;
+
+const newJobId = () => `deploy_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+
+const setJob = (jobId, patch) => {
+    const prev = deployJobs.get(jobId) || {};
+    deployJobs.set(jobId, { ...prev, ...patch, updatedAt: new Date().toISOString() });
+};
+
+const getJob = (jobId) => deployJobs.get(jobId);
+
+const enqueueDeployJob = (jobId, handler) => {
+    deployQueue.push({ jobId, handler });
+    pumpDeployQueue();
+};
+
+const pumpDeployQueue = () => {
+    while (activeDeployJobs < DEPLOY_JOB_MAX_CONCURRENT && deployQueue.length > 0) {
+        const next = deployQueue.shift();
+        activeDeployJobs += 1;
+        Promise.resolve()
+            .then(next.handler)
+            .catch((e) => {
+                try {
+                    setJob(next.jobId, {
+                        status: 'failed',
+                        phase: 'failed',
+                        error: e && e.message ? e.message : String(e),
+                    });
+                } catch {}
+            })
+            .finally(() => {
+                activeDeployJobs -= 1;
+                pumpDeployQueue();
+            });
+    }
 };
 
 // --- DATABASE INITIALIZATION ---
@@ -187,18 +245,23 @@ const getSiteSize = (dirPath) => {
 // 1. Auth
 app.post('/api/auth/login', async (req, res) => {
     const { username, password } = req.body;
+    console.log('[login] Attempt:', username);
     try {
         const [users] = await db.execute('SELECT * FROM users WHERE username = ?', [username]);
+        console.log('[login] Users found:', users.length);
         const user = users[0];
         
         if (user && user.password === password) {
+            console.log('[login] Success:', username);
             const token = jwt.sign({ id: user.id, role: user.role }, SECRET_KEY, { expiresIn: '12h' });
             const { password, ...u } = user;
             res.json({ token, user: u });
         } else {
+            console.log('[login] Failed: Invalid credentials for', username);
             res.status(401).json({ message: 'Invalid credentials' });
         }
     } catch (err) {
+        console.error('[login] Error:', err);
         res.status(500).json({ message: err.message });
     }
 });
@@ -288,95 +351,158 @@ app.post('/api/sites/deploy', upload.single('file'), async (req, res) => {
     const file = req.file;
 
     if (!userId || !name || !framework || !subdomain) {
+        if (file && file.path) await safeRm(file.path);
         return res.status(400).json({ message: 'Missing required fields' });
     }
 
     try {
         const [users] = await db.execute('SELECT username FROM users WHERE id = ?', [userId]);
-        if (users.length === 0) return res.status(404).json({ message: 'User not found' });
+        if (users.length === 0) {
+            if (file && file.path) await safeRm(file.path);
+            return res.status(404).json({ message: 'User not found' });
+        }
         const username = users[0].username;
 
-        const userDir = path.join(STORAGE_ROOT, username);
-        const finalSiteDir = path.join(userDir, name);
+        // Create background job
+        const jobId = newJobId();
+        setJob(jobId, {
+            id: jobId,
+            status: 'queued',
+            createdAt: new Date().toISOString(),
+            phase: 'queued',
+            request: { userId, username, name, framework, subdomain, needsDatabase, attachedDatabaseId, zipPath: file ? file.path : null },
+        });
 
-        // Extract directly to mapped volume with retry
-        let extractSuccess = false;
-        let retryCount = 0;
+        // Run deployment in background
+        enqueueDeployJob(jobId, async () => {
+            const job = getJob(jobId);
+            if (!job) return;
 
-        while (!extractSuccess && retryCount <= DEPLOY_RETRY_COUNT) {
-            try {
-                // Clean up any partial extraction from previous failed attempt
-                await safeRm(finalSiteDir);
-                
-                // Create user directory
-                await withRetries(() => fs.promises.mkdir(userDir, { recursive: true }));
-                
-                // Create site directory
-                await withRetries(() => fs.promises.mkdir(finalSiteDir, { recursive: true }));
+            setJob(jobId, { status: 'running', phase: 'extracting' });
+            const reqData = job.request;
 
-                // Extract ZIP directly to final location
-                if (file && file.path) {
-                    const zip = new AdmZip(file.path);
-                    await withRetries(() => {
-                        zip.extractAllTo(finalSiteDir, true);
-                    });
-                    await safeRm(file.path);
-                } else {
-                    await withRetries(() => 
-                        fs.promises.writeFile(path.join(finalSiteDir, 'index.html'), '<h1>Hello World</h1>')
-                    );
-                }
+            const userDir = path.join(STORAGE_ROOT, reqData.username);
+            const finalSiteDir = path.join(userDir, reqData.name);
 
-                extractSuccess = true;
-            } catch (err) {
-                console.warn(`[deploy] Attempt ${retryCount + 1}/${DEPLOY_RETRY_COUNT + 1} failed:`, err.message);
-                retryCount += 1;
-                
-                if (retryCount > DEPLOY_RETRY_COUNT) {
-                    // Clean up failed extraction
+            let extractSuccess = false;
+            let retryCount = 0;
+
+            while (!extractSuccess && retryCount <= DEPLOY_RETRY_COUNT) {
+                try {
                     await safeRm(finalSiteDir);
-                    if (file && file.path) await safeRm(file.path);
-                    throw new Error(`Deployment failed after ${DEPLOY_RETRY_COUNT + 1} attempts: ${err.message}`);
+                    await withRetries(() => fs.promises.mkdir(userDir, { recursive: true }));
+                    await withRetries(() => fs.promises.mkdir(finalSiteDir, { recursive: true }));
+
+                    if (reqData.zipPath) {
+                        const zip = new AdmZip(reqData.zipPath);
+                        const entries = zip.getEntries();
+                        
+                        await withRetries(() => {
+                            for (const entry of entries) {
+                                const entryPath = entry.entryName.replace(/\\/g, '/');
+                                if (
+                                    entryPath.includes('/.git/') || 
+                                    entryPath.startsWith('.git/') ||
+                                    entryPath.endsWith('/.git') ||
+                                    entryPath === '.git' ||
+                                    entryPath.includes('/.DS_Store') ||
+                                    entryPath.includes('/Thumbs.db') ||
+                                    entryPath.includes('/__MACOSX/')
+                                ) {
+                                    continue;
+                                }
+                                
+                                if (entry.isDirectory) {
+                                    const targetDir = path.join(finalSiteDir, entry.entryName);
+                                    fs.mkdirSync(targetDir, { recursive: true });
+                                } else {
+                                    const targetFile = path.join(finalSiteDir, entry.entryName);
+                                    const targetDir = path.dirname(targetFile);
+                                    fs.mkdirSync(targetDir, { recursive: true });
+                                    fs.writeFileSync(targetFile, entry.getData());
+                                }
+                            }
+                        });
+                        
+                        await safeRm(reqData.zipPath);
+                    } else {
+                        await withRetries(() => 
+                            fs.promises.writeFile(path.join(finalSiteDir, 'index.html'), '<h1>Hello World</h1>')
+                        );
+                    }
+
+                    extractSuccess = true;
+                } catch (err) {
+                    console.warn(`[deploy] Job ${jobId} attempt ${retryCount + 1}/${DEPLOY_RETRY_COUNT + 1} failed:`, err.message);
+                    retryCount += 1;
+                    
+                    if (retryCount > DEPLOY_RETRY_COUNT) {
+                        await safeRm(finalSiteDir);
+                        if (reqData.zipPath) await safeRm(reqData.zipPath);
+                        throw new Error(`Deployment failed after ${DEPLOY_RETRY_COUNT + 1} attempts: ${err.message}`);
+                    }
+
+                    const jitter = Math.floor(Math.random() * 100);
+                    const delay = Math.min(5000, DEPLOY_RETRY_BASE_DELAY_MS * (2 ** retryCount) + jitter);
+                    await sleep(delay);
                 }
-
-                // Wait before retry
-                const jitter = Math.floor(Math.random() * 100);
-                const delay = Math.min(5000, DEPLOY_RETRY_BASE_DELAY_MS * (2 ** retryCount) + jitter);
-                await sleep(delay);
             }
-        }
 
-        // Save to database
-        const hasDb = needsDatabase === 'true' || !!attachedDatabaseId;
-        const siteId = `s_${Date.now()}`;
+            // Save to database
+            setJob(jobId, { phase: 'saving' });
+            const hasDb = reqData.needsDatabase === 'true' || !!reqData.attachedDatabaseId;
+            const siteId = `s_${Date.now()}`;
 
-        if (attachedDatabaseId) {
-            await db.execute('DELETE FROM sites WHERE id = ?', [attachedDatabaseId]);
-        }
+            if (reqData.attachedDatabaseId) {
+                await db.execute('DELETE FROM sites WHERE id = ?', [reqData.attachedDatabaseId]);
+            }
 
-        const status = 'ACTIVE';
-        await db.execute(
-            'INSERT INTO sites (id, user_id, name, subdomain, framework, status, storage_used, has_database) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-            [siteId, userId, name, subdomain, framework, status, 15, hasDb]
-        );
+            const status = 'ACTIVE';
+            await db.execute(
+                'INSERT INTO sites (id, user_id, name, subdomain, framework, status, storage_used, has_database) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+                [siteId, reqData.userId, reqData.name, reqData.subdomain, reqData.framework, status, 15, hasDb]
+            );
 
-        const site = {
-            id: siteId,
-            userId,
-            name,
-            subdomain,
-            framework,
-            status,
-            createdAt: new Date(),
-            storageUsed: 15,
-            hasDatabase: hasDb,
-        };
+            const site = {
+                id: siteId,
+                userId: reqData.userId,
+                name: reqData.name,
+                subdomain: reqData.subdomain,
+                framework: reqData.framework,
+                status,
+                createdAt: new Date(),
+                storageUsed: 15,
+                hasDatabase: hasDb,
+            };
 
-        res.json(site);
+            setJob(jobId, { status: 'completed', phase: 'done', result: { site } });
+        });
+
+        // Return immediately with job ID
+        res.status(202).json({ jobId, status: 'queued' });
     } catch (err) {
         console.error('[deploy] Error:', err);
+        if (file && file.path) await safeRm(file.path);
         res.status(500).json({ message: err.message || 'Deployment failed' });
     }
+});
+
+// Deploy job status polling endpoint
+app.get('/api/deploy/:jobId', (req, res) => {
+    const job = getJob(req.params.jobId);
+    if (!job) return res.status(404).json({ message: 'Job not found' });
+    
+    const safeJob = { ...job };
+    if (safeJob.request) {
+        safeJob.request = {
+            userId: safeJob.request.userId,
+            username: safeJob.request.username,
+            name: safeJob.request.name,
+            framework: safeJob.request.framework,
+            subdomain: safeJob.request.subdomain,
+        };
+    }
+    res.json(safeJob);
 });
 
 app.delete('/api/sites/:id', async (req, res) => {
@@ -601,6 +727,95 @@ app.put('/api/admin/payments/:id/verify', async (req, res) => {
     }
     const [updated] = await db.execute('SELECT * FROM payments WHERE id = ?', [id]);
     res.json({...updated[0], userId: updated[0].user_id, proofUrl: updated[0].proof_url});
+});
+
+// Payment proof upload endpoint
+app.post('/api/payments', upload.single('proof'), async (req, res) => {
+    const { userId, plan, amount } = req.body;
+    const proofFile = req.file;
+
+    if (!userId || !plan || !amount) {
+        if (proofFile && proofFile.path) await safeRm(proofFile.path);
+        return res.status(400).json({ message: 'Missing required fields' });
+    }
+
+    if (!proofFile) {
+        return res.status(400).json({ message: 'Payment proof file is required' });
+    }
+
+    try {
+        const [users] = await db.execute('SELECT username FROM users WHERE id = ?', [userId]);
+        if (users.length === 0) {
+            if (proofFile && proofFile.path) await safeRm(proofFile.path);
+            return res.status(404).json({ message: 'User not found' });
+        }
+        const username = users[0].username;
+
+        // Create user folder in payment proof path
+        const userProofDir = path.join(PAYMENT_PROOF_PATH, username);
+        await withRetries(() => fs.promises.mkdir(userProofDir, { recursive: true }));
+
+        // Generate unique filename with timestamp
+        const timestamp = Date.now();
+        const fileExt = path.extname(proofFile.originalname);
+        const filename = `proof_${plan}_${timestamp}${fileExt}`;
+        const finalPath = path.join(userProofDir, filename);
+
+        // Move file from temp to final location
+        await withRetries(() => fs.promises.rename(proofFile.path, finalPath));
+
+        // Store relative path in database (username/filename)
+        const relativeProofPath = `${username}/${filename}`;
+        const paymentId = `pay_${timestamp}`;
+
+        await db.execute(
+            'INSERT INTO payments (id, user_id, plan, amount, proof_url, status, created_at) VALUES (?, ?, ?, ?, ?, ?, NOW())',
+            [paymentId, userId, plan, amount, relativeProofPath, 'PENDING']
+        );
+
+        const payment = {
+            id: paymentId,
+            userId,
+            plan,
+            amount: parseFloat(amount),
+            proofUrl: relativeProofPath,
+            status: 'PENDING',
+            createdAt: new Date(),
+        };
+
+        res.json(payment);
+    } catch (err) {
+        console.error('[payment] Error:', err);
+        if (proofFile && proofFile.path) await safeRm(proofFile.path);
+        res.status(500).json({ message: err.message || 'Payment submission failed' });
+    }
+});
+
+// Serve payment proof files (admin can view)
+app.get('/api/payments/proof/:username/:filename', async (req, res) => {
+    const { username, filename } = req.params;
+    const filePath = path.join(PAYMENT_PROOF_PATH, username, filename);
+
+    try {
+        await fs.promises.access(filePath, fs.constants.R_OK);
+        res.sendFile(filePath);
+    } catch (err) {
+        res.status(404).json({ message: 'Proof file not found' });
+    }
+});
+
+// Get payment history for user
+app.get('/api/payments/history/:userId', async (req, res) => {
+    const { userId } = req.params;
+    try {
+        const [payments] = await db.execute(
+            'SELECT id, user_id as userId, plan, amount, proof_url as proofUrl, status, created_at as createdAt FROM payments WHERE user_id = ? ORDER BY created_at DESC',
+            [userId]
+        );
+        res.json(payments);
+    } catch (err) {
+        res.status(500).json({ message: err.message });
+    }
 });
 
 // 5. Support

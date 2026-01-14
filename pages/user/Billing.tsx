@@ -57,7 +57,7 @@ export const Billing: React.FC<BillingProps> = ({ plans = [], userPlanName = 'Ba
         setIsSubmitting(true);
         try {
             const totalAmount = selectedPlan.price + uniqueCode;
-            await api.billing.submitPayment(user.id, user.username, selectedPlan.name, totalAmount, paymentMethod, proofFile);
+            await api.billing.submitPayment(user.id, user.username, selectedPlan.name, totalAmount, proofFile);
             
             setSuccessMsg("Payment submitted successfully! Please wait for admin verification.");
             setTimeout(() => {

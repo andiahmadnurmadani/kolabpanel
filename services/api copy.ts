@@ -1,4 +1,5 @@
 import { User, Site, HostingPlan, Domain, Payment, Framework, FileNode, SiteStatus, PaymentStatus, SupportTicket, ChatMessage } from '../types';
+import { getMockFiles } from '../constants';
 
 const API_URL = 'http://localhost:5000/api';
 const DB_KEYS = { TOKEN: 'kp_token', USER_ID: 'kp_current_user_id' };
@@ -188,12 +189,6 @@ export const api = {
             method: 'POST',
             headers: getAuthHeadersMultipart(),
             body: formData
-        });
-        return handleResponse(res);
-    },
-    getHistory: async (userId: string): Promise<Payment[]> => {
-        const res = await fetch(`${API_URL}/payments/history/${userId}`, {
-            headers: getAuthHeaders(),
         });
         return handleResponse(res);
     }

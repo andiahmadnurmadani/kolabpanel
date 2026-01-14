@@ -190,7 +190,7 @@ const App: React.FC = () => {
                     onUpload={uploadFile}
                 />
              }
-             {currentView === 'DATABASE' && <DatabaseManager sites={sites} user={user} />}
+             {currentView === 'DATABASE' && <DatabaseManager sites={sites} user={user} onRefresh={() => user && refreshSites(user.id)} />}
              {currentView === 'TERMINAL' && <RestrictedTerminal sites={sites} logs={siteLogs} isExecuting={isExecuting} onExecute={executeCommand} />}
              {currentView === 'BILLING' && <Billing plans={plans} userPlanName={user.plan} />}
              {currentView === 'PROFILE' && <UserProfile user={user} />}

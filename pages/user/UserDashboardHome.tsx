@@ -1,8 +1,8 @@
 import React, { useState } from 'react';
 import { Card, StatusBadge } from '../../components/Shared';
 import { api } from '../../services/api';
-import { User, HostingPlan, Site } from '../../types';
-import { Globe, HardDrive, Crown, Zap, Server, Cloud, ExternalLink, Trash2, Edit2, Save, X, AlertTriangle } from 'lucide-react';
+import { User, HostingPlan, Site, SiteStatus } from '../../types';
+import { Globe, HardDrive, Crown, Zap, Server, Cloud, ExternalLink, Trash2, Edit2, Save, X, AlertTriangle, Database } from 'lucide-react';
 import { FRAMEWORK_ICONS } from '../../constants';
 
 interface DashboardProps {
@@ -16,19 +16,25 @@ export const UserDashboardHome: React.FC<DashboardProps> = ({ sites = [], user, 
   const [showAllSites, setShowAllSites] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editSubdomain, setEditSubdomain] = useState('');
-  const [deleteTarget, setDeleteTarget] = useState<{id: string, name: string} | null>(null);
+  
+  // Delete State
+  const [deleteTarget, setDeleteTarget] = useState<Site | null>(null);
+  const [deleteWithDb, setDeleteWithDb] = useState(false);
 
   // Robust safety checks
   const safePlans = Array.isArray(plans) ? plans : [];
   const safeSites = Array.isArray(sites) ? sites : [];
   const safeUser = user || { plan: 'Basic', username: 'Guest' } as User;
 
+  // FILTER: Only show active web sites (exclude detached DBs)
+  const displaySites = safeSites.filter(s => s.status !== SiteStatus.DB_ONLY);
+
   const currentPlan = safePlans.find(p => p.name === safeUser.plan);
   const maxSites = currentPlan?.limits?.sites || 0;
   const maxStorage = currentPlan?.limits?.storage || 0;
   
-  const usedSites = safeSites.length;
-  const usedStorage = safeSites.reduce((acc, s) => acc + (s.storageUsed || 0), 0);
+  const usedSites = displaySites.length;
+  const usedStorage = displaySites.reduce((acc, s) => acc + (s.storageUsed || 0), 0);
 
   const sitesPercentage = maxSites > 0 ? (usedSites / maxSites) * 100 : 0;
   const storagePercentage = maxStorage > 0 ? (usedStorage / maxStorage) * 100 : 0;
@@ -54,14 +60,15 @@ export const UserDashboardHome: React.FC<DashboardProps> = ({ sites = [], user, 
     }
   };
 
-  const initiateDelete = (siteId: string, siteName: string) => {
-      setDeleteTarget({ id: siteId, name: siteName });
+  const initiateDelete = (site: Site) => {
+      setDeleteTarget(site);
+      setDeleteWithDb(false); // Default to keeping the DB safe
   };
 
   const confirmDelete = async () => {
       if (!deleteTarget) return;
       try {
-          await api.sites.delete(deleteTarget.id);
+          await api.sites.delete(deleteTarget.id, deleteWithDb);
           if (onRefresh) onRefresh();
           setDeleteTarget(null);
       } catch (e) {
@@ -162,16 +169,25 @@ export const UserDashboardHome: React.FC<DashboardProps> = ({ sites = [], user, 
               <tr className="border-b border-slate-100 text-slate-500">
                 <th className="px-4 py-3 font-medium">Site Name</th>
                 <th className="px-4 py-3 font-medium">Framework</th>
-                <th className="px-4 py-3 font-medium">Subdomain</th>
+                <th className="px-4 py-3 font-medium">URL</th>
                 <th className="px-4 py-3 font-medium">Status</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-50">
-              {safeSites.length > 0 ? safeSites.slice(0, 5).map(site => (
+              {displaySites.length > 0 ? displaySites.slice(0, 5).map(site => (
                   <tr key={site.id}>
                       <td className="px-4 py-3 font-medium text-slate-900">{site.name}</td>
                       <td className="px-4 py-3 text-slate-600">{site.framework}</td>
-                      <td className="px-4 py-3 text-slate-500">{site.subdomain}</td>
+                      <td className="px-4 py-3">
+                          <a 
+                            href={`http://${site.subdomain}.kolabpanel.com`} 
+                            target="_blank" 
+                            rel="noreferrer"
+                            className="text-indigo-600 hover:text-indigo-800 hover:underline transition-colors font-medium"
+                          >
+                            {site.subdomain}.kolabpanel.com
+                          </a>
+                      </td>
                       <td className="px-4 py-3"><StatusBadge status={site.status} /></td>
                   </tr>
               )) : (
@@ -201,7 +217,7 @@ export const UserDashboardHome: React.FC<DashboardProps> = ({ sites = [], user, 
                     <thead className="bg-slate-50 text-slate-500 border-b border-slate-200 sticky top-0 z-10 shadow-sm">
                        <tr>
                           <th className="px-6 py-4 font-medium">Application</th>
-                          <th className="px-6 py-4 font-medium">URL (Subdomain)</th>
+                          <th className="px-6 py-4 font-medium">URL</th>
                           <th className="px-6 py-4 font-medium">Created At</th>
                           <th className="px-6 py-4 font-medium">Storage</th>
                           <th className="px-6 py-4 font-medium">Status</th>
@@ -209,7 +225,7 @@ export const UserDashboardHome: React.FC<DashboardProps> = ({ sites = [], user, 
                        </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100">
-                       {safeSites.map(site => (
+                       {displaySites.map(site => (
                           <tr key={site.id} className="hover:bg-slate-50 transition-colors group">
                              <td className="px-6 py-4">
                                 <div className="flex items-center gap-3">
@@ -229,7 +245,14 @@ export const UserDashboardHome: React.FC<DashboardProps> = ({ sites = [], user, 
                                         <span className="text-xs text-slate-500 ml-1">.kolabpanel.com</span>
                                     </div>
                                 ) : (
-                                    <span className="text-indigo-600 font-mono text-xs bg-indigo-50 px-2 py-1 rounded">{site.subdomain}.kolabpanel.com</span>
+                                    <a 
+                                      href={`http://${site.subdomain}.kolabpanel.com`} 
+                                      target="_blank" 
+                                      rel="noreferrer"
+                                      className="text-indigo-600 font-mono text-xs bg-indigo-50 px-2 py-1 rounded hover:underline hover:text-indigo-800 transition-colors"
+                                    >
+                                      {site.subdomain}.kolabpanel.com
+                                    </a>
                                 )}
                              </td>
                              <td className="px-6 py-4 text-slate-600">{new Date(site.createdAt).toLocaleDateString()}</td>
@@ -245,7 +268,7 @@ export const UserDashboardHome: React.FC<DashboardProps> = ({ sites = [], user, 
                                    ) : (
                                        <>
                                            <button className="p-1.5 text-indigo-600 hover:bg-indigo-50 rounded transition-colors" title="Edit URL" onClick={() => startEdit(site)}><Edit2 className="w-4 h-4" /></button>
-                                           <button className="p-1.5 text-red-500 hover:bg-red-50 rounded transition-colors" title="Delete Site" onClick={() => initiateDelete(site.id, site.name)}><Trash2 className="w-4 h-4" /></button>
+                                           <button className="p-1.5 text-red-500 hover:bg-red-50 rounded transition-colors" title="Delete Site" onClick={() => initiateDelete(site)}><Trash2 className="w-4 h-4" /></button>
                                            <button className="inline-flex items-center gap-1 text-xs font-medium text-indigo-600 hover:text-indigo-800 bg-indigo-50 hover:bg-indigo-100 px-3 py-1.5 rounded-full transition-colors"><ExternalLink className="w-3 h-3" /> Visit</button>
                                        </>
                                    )}
@@ -253,14 +276,14 @@ export const UserDashboardHome: React.FC<DashboardProps> = ({ sites = [], user, 
                              </td>
                           </tr>
                        ))}
-                       {safeSites.length === 0 && (
-                          <tr><td colSpan={6} className="px-6 py-12 text-center text-slate-500"><Server className="w-12 h-12 text-slate-300 mx-auto mb-3" /><p>No sites deployed yet.</p></td></tr>
+                       {displaySites.length === 0 && (
+                          <tr><td colSpan={6} className="px-6 py-12 text-center text-slate-500"><Server className="w-12 h-12 text-slate-300 mx-auto mb-3" /><p>No active sites found.</p></td></tr>
                        )}
                     </tbody>
                  </table>
               </div>
               <div className="px-6 py-4 border-t border-slate-100 bg-slate-50 flex justify-between items-center text-xs text-slate-500">
-                  <span>Showing {safeSites.length} total sites</span>
+                  <span>Showing {displaySites.length} active sites</span>
                   <span>Limits: {usedSites} / {maxSites} used</span>
               </div>
            </div>
@@ -271,17 +294,47 @@ export const UserDashboardHome: React.FC<DashboardProps> = ({ sites = [], user, 
       {deleteTarget && (
         <div className="fixed inset-0 z-[60] flex items-center justify-center p-4">
             <div className="absolute inset-0 bg-slate-900/60 backdrop-blur-sm transition-opacity" onClick={() => setDeleteTarget(null)} />
-            <div className="relative w-full max-w-md bg-white rounded-xl shadow-2xl p-6">
+            <div className="relative w-full max-w-md bg-white rounded-xl shadow-2xl p-6 animate-in fade-in zoom-in-95 duration-200">
                 <div className="flex items-start gap-4">
                     <div className="p-3 bg-red-100 rounded-full shrink-0"><AlertTriangle className="w-6 h-6 text-red-600" /></div>
                     <div>
                         <h3 className="text-lg font-bold text-slate-900">Delete Site?</h3>
-                        <p className="text-sm text-slate-500 mt-1">Are you sure you want to delete <span className="font-bold text-slate-800">{deleteTarget.name}</span>? This action will permanently remove all files and databases associated with this site.</p>
+                        <p className="text-sm text-slate-500 mt-1">Are you sure you want to delete <span className="font-bold text-slate-800">{deleteTarget.name}</span>? This action will permanently remove all files.</p>
+                        
+                        {deleteTarget.hasDatabase && (
+                            <div className="mt-4 p-3 bg-slate-50 border border-slate-200 rounded-lg">
+                                <div className="flex items-start gap-3">
+                                    <input 
+                                        type="checkbox" 
+                                        id="deleteDb"
+                                        checked={deleteWithDb}
+                                        onChange={(e) => setDeleteWithDb(e.target.checked)}
+                                        className="mt-1 w-4 h-4 text-red-600 border-slate-300 rounded focus:ring-red-500"
+                                    />
+                                    <label htmlFor="deleteDb" className="text-sm text-slate-700 cursor-pointer">
+                                        <div className="font-semibold flex items-center gap-1.5">
+                                            <Database className="w-3.5 h-3.5" />
+                                            Delete associated MySQL Database?
+                                        </div>
+                                        <div className="text-xs text-slate-500 mt-0.5">
+                                            If unchecked, the database will be preserved.
+                                        </div>
+                                        {deleteWithDb && (
+                                            <div className="mt-2 text-xs font-medium text-red-600 bg-red-50 px-2 py-1 rounded inline-block">
+                                                Warning: Database data will be lost.
+                                            </div>
+                                        )}
+                                    </label>
+                                </div>
+                            </div>
+                        )}
                     </div>
                 </div>
                 <div className="mt-6 flex justify-end gap-3">
                     <button onClick={() => setDeleteTarget(null)} className="px-4 py-2 text-slate-600 hover:bg-slate-50 rounded-lg font-medium text-sm transition-colors">Cancel</button>
-                    <button onClick={confirmDelete} className="px-4 py-2 bg-red-600 text-white rounded-lg font-medium text-sm hover:bg-red-700 shadow-sm transition-colors">Delete Site</button>
+                    <button onClick={confirmDelete} className="px-4 py-2 bg-red-600 text-white rounded-lg font-medium text-sm hover:bg-red-700 shadow-sm transition-colors">
+                        {deleteWithDb ? 'Delete Site & DB' : (deleteTarget.hasDatabase ? 'Delete Site Only' : 'Delete Site')}
+                    </button>
                 </div>
             </div>
         </div>

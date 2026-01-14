@@ -1,24 +1,48 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { Card } from '../Shared';
-import { Framework, Domain } from '../../types';
-import { Upload, FileArchive, Check, Loader2, Database } from 'lucide-react';
+import { Framework, Domain, Site, SiteStatus } from '../../types';
+import { Upload, FileArchive, Check, Loader2, Database, Link, Plus, Unlink } from 'lucide-react';
 import { api } from '../../services/api';
 
 interface CreateSiteProps {
   domains: Domain[];
-  onDeploy: () => void; // Changed signature
+  onDeploy: () => void;
 }
+
+type DbMode = 'NONE' | 'NEW' | 'ATTACH';
 
 export const CreateSite: React.FC<CreateSiteProps> = ({ domains, onDeploy }) => {
   const [deployStage, setDeployStage] = useState<'IDLE' | 'UPLOADING' | 'EXTRACTING' | 'FINALIZING'>('IDLE');
+  
+  // Form State
   const [name, setName] = useState('');
   const [framework, setFramework] = useState<Framework>(Framework.REACT);
   const [subdomain, setSubdomain] = useState('');
   const [selectedDomain, setSelectedDomain] = useState(domains[0]?.name || 'kolabpanel.com');
-  const [needsDatabase, setNeedsDatabase] = useState(false);
   const [file, setFile] = useState<File | null>(null);
   const [error, setError] = useState('');
+  
+  // DB State
+  const [dbMode, setDbMode] = useState<DbMode>('NONE');
+  const [orphanedDbs, setOrphanedDbs] = useState<Site[]>([]);
+  const [selectedOrphanId, setSelectedOrphanId] = useState('');
+
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Fetch Orphaned Databases on mount
+  useEffect(() => {
+    const fetchOrphans = async () => {
+        try {
+            const user = await api.auth.me();
+            const sites = await api.sites.list(user.id);
+            const orphans = sites.filter(s => s.status === SiteStatus.DB_ONLY);
+            setOrphanedDbs(orphans);
+        } catch (e) {
+            console.error("Failed to fetch sites", e);
+        }
+    };
+    fetchOrphans();
+  }, [deployStage]); // Refetch after deployment
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     setError('');
@@ -55,6 +79,11 @@ export const CreateSite: React.FC<CreateSiteProps> = ({ domains, onDeploy }) => 
       return;
     }
 
+    if (dbMode === 'ATTACH' && !selectedOrphanId) {
+        setError('Please select a detached database to connect.');
+        return;
+    }
+
     const userData = await api.auth.me();
 
     // Prepare FormData
@@ -63,7 +92,13 @@ export const CreateSite: React.FC<CreateSiteProps> = ({ domains, onDeploy }) => 
     formData.append('name', name);
     formData.append('framework', framework);
     formData.append('subdomain', `${subdomain}.${selectedDomain}`);
-    formData.append('needsDatabase', String(needsDatabase));
+    formData.append('needsDatabase', String(dbMode === 'NEW'));
+    
+    // If attaching, send the ID of the old site/db
+    if (dbMode === 'ATTACH') {
+        formData.append('attachedDatabaseId', selectedOrphanId);
+    }
+
     formData.append('file', file);
 
     try {
@@ -71,20 +106,21 @@ export const CreateSite: React.FC<CreateSiteProps> = ({ domains, onDeploy }) => 
         await api.sites.deploy(formData);
         
         setDeployStage('EXTRACTING');
-        // Add artificial small delay to show steps clearly, or remove if not needed
+        // Add artificial small delay to show steps clearly
         await new Promise(r => setTimeout(r, 500));
         
         setDeployStage('FINALIZING');
         await new Promise(r => setTimeout(r, 500));
 
-        alert(`Site "${name}" successfully deployed to D:/KolabPanel!`);
+        alert(`Site "${name}" successfully deployed!`);
         onDeploy(); // Refresh site list in App
         setDeployStage('IDLE');
         
         // Reset form
         setName('');
         setSubdomain('');
-        setNeedsDatabase(false);
+        setDbMode('NONE');
+        setSelectedOrphanId('');
         setFile(null);
     } catch (e: any) {
         setError(e.message || 'Deployment failed');
@@ -150,30 +186,78 @@ export const CreateSite: React.FC<CreateSiteProps> = ({ domains, onDeploy }) => 
                 </select>
               </div>
             </div>
-            <p className="text-xs text-slate-500">Choose from available base domains provided by admin.</p>
           </div>
 
-          {/* Database Option */}
-          <div className="p-4 border border-slate-200 rounded-lg bg-slate-50 flex items-start gap-3">
-             <div className="flex items-center h-5">
-               <input 
-                  id="needsDatabase"
-                  type="checkbox"
-                  checked={needsDatabase}
-                  onChange={(e) => setNeedsDatabase(e.target.checked)}
-                  disabled={isProcessing}
-                  className="w-4 h-4 text-indigo-600 border-slate-300 rounded focus:ring-indigo-500"
-               />
-             </div>
-             <label htmlFor="needsDatabase" className="cursor-pointer">
-                <div className="flex items-center gap-2 text-sm font-bold text-slate-800">
-                    <Database className="w-4 h-4 text-indigo-600" />
-                    Create MySQL Database
+          {/* Database Configuration Section */}
+          <div className="space-y-3">
+             <label className="text-sm font-medium text-slate-700">Database Configuration</label>
+             
+             <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                {/* Option 1: None */}
+                <div 
+                    onClick={() => !isProcessing && setDbMode('NONE')}
+                    className={`cursor-pointer p-3 rounded-lg border-2 transition-all flex flex-col items-center text-center gap-2 ${dbMode === 'NONE' ? 'border-indigo-600 bg-indigo-50' : 'border-slate-200 hover:border-slate-300 bg-white'}`}
+                >
+                    <div className={`p-2 rounded-full ${dbMode === 'NONE' ? 'bg-indigo-200' : 'bg-slate-100'}`}>
+                        <Database className={`w-4 h-4 ${dbMode === 'NONE' ? 'text-indigo-700' : 'text-slate-400'}`} />
+                    </div>
+                    <span className={`text-xs font-bold ${dbMode === 'NONE' ? 'text-indigo-700' : 'text-slate-600'}`}>No Database</span>
                 </div>
-                <p className="text-xs text-slate-500 mt-1">
-                    If checked, a new MySQL database and user will be automatically created for this project.
-                </p>
-             </label>
+
+                {/* Option 2: New */}
+                <div 
+                    onClick={() => !isProcessing && setDbMode('NEW')}
+                    className={`cursor-pointer p-3 rounded-lg border-2 transition-all flex flex-col items-center text-center gap-2 ${dbMode === 'NEW' ? 'border-indigo-600 bg-indigo-50' : 'border-slate-200 hover:border-slate-300 bg-white'}`}
+                >
+                    <div className={`p-2 rounded-full ${dbMode === 'NEW' ? 'bg-indigo-200' : 'bg-slate-100'}`}>
+                        <Plus className={`w-4 h-4 ${dbMode === 'NEW' ? 'text-indigo-700' : 'text-slate-400'}`} />
+                    </div>
+                    <span className={`text-xs font-bold ${dbMode === 'NEW' ? 'text-indigo-700' : 'text-slate-600'}`}>Create New</span>
+                </div>
+
+                {/* Option 3: Attach (Conditional) */}
+                {orphanedDbs.length > 0 ? (
+                     <div 
+                        onClick={() => !isProcessing && setDbMode('ATTACH')}
+                        className={`cursor-pointer p-3 rounded-lg border-2 transition-all flex flex-col items-center text-center gap-2 ${dbMode === 'ATTACH' ? 'border-indigo-600 bg-indigo-50' : 'border-slate-200 hover:border-slate-300 bg-white'}`}
+                    >
+                        <div className={`p-2 rounded-full ${dbMode === 'ATTACH' ? 'bg-indigo-200' : 'bg-slate-100'}`}>
+                            <Link className={`w-4 h-4 ${dbMode === 'ATTACH' ? 'text-indigo-700' : 'text-slate-400'}`} />
+                        </div>
+                        <div className="flex flex-col">
+                             <span className={`text-xs font-bold ${dbMode === 'ATTACH' ? 'text-indigo-700' : 'text-slate-600'}`}>Connect Existing</span>
+                             <span className="text-[10px] text-emerald-600 bg-emerald-50 px-1 rounded border border-emerald-100">{orphanedDbs.length} Available</span>
+                        </div>
+                    </div>
+                ) : (
+                    <div className="opacity-50 cursor-not-allowed p-3 rounded-lg border border-slate-200 flex flex-col items-center text-center gap-2 bg-slate-50">
+                         <div className="p-2 rounded-full bg-slate-100">
+                             <Unlink className="w-4 h-4 text-slate-300" />
+                         </div>
+                         <span className="text-xs font-bold text-slate-400">No Detached DBs</span>
+                    </div>
+                )}
+             </div>
+
+             {/* Dynamic Selection Input for Attach */}
+             {dbMode === 'ATTACH' && (
+                 <div className="mt-3 animate-in fade-in slide-in-from-top-2">
+                     <label className="text-xs font-semibold text-indigo-600 mb-1 block">Select Detached Database:</label>
+                     <select 
+                        value={selectedOrphanId} 
+                        onChange={(e) => setSelectedOrphanId(e.target.value)}
+                        className="w-full px-3 py-2 bg-indigo-50 border border-indigo-200 rounded-lg text-sm text-indigo-900 focus:ring-2 focus:ring-indigo-500 outline-none"
+                     >
+                         <option value="" disabled>-- Choose a database --</option>
+                         {orphanedDbs.map(db => (
+                             <option key={db.id} value={db.id}>
+                                 db_{db.subdomain.replace(/[^a-z0-9]/g, '')} (from deleted: {db.name})
+                             </option>
+                         ))}
+                     </select>
+                     <p className="text-[10px] text-slate-500 mt-1">This will attach the existing database data to your new project.</p>
+                 </div>
+             )}
           </div>
 
           <div className="space-y-2">

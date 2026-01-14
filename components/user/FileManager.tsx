@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { Card } from '../Shared';
 import { Site, FileNode } from '../../types';
-import { HardDrive, Upload, Folder, File as FileIcon, Trash2, Edit2, ChevronDown, Download, CornerUpLeft, Home, Plus, Loader2 } from 'lucide-react';
+import { HardDrive, Upload, Folder, File as FileIcon, Trash2, Edit2, ChevronDown, Download, CornerUpLeft, Home, Plus, Loader2, X, Check, AlertTriangle } from 'lucide-react';
 import { useFileSystem } from '../../hooks/useFileSystem';
 
 interface FileManagerProps {
@@ -19,6 +19,17 @@ export const FileManager: React.FC<FileManagerProps> = ({ sites }) => {
   const [currentPath, setCurrentPath] = useState('/');
   const fileInputRef = useRef<HTMLInputElement>(null);
   
+  // Rename State
+  const [renamingId, setRenamingId] = useState<string | null>(null);
+  const [renameValue, setRenameValue] = useState('');
+
+  // Delete State
+  const [deleteTarget, setDeleteTarget] = useState<FileNode | null>(null);
+
+  // New Folder State
+  const [isCreatingFolder, setIsCreatingFolder] = useState(false);
+  const [newFolderName, setNewFolderName] = useState('');
+
   const selectedSite = sites.find(s => s.id === selectedSiteId) || sites[0];
 
   // Use the new async hook
@@ -27,10 +38,14 @@ export const FileManager: React.FC<FileManagerProps> = ({ sites }) => {
   useEffect(() => {
       if (selectedSite) {
           fetchFiles(selectedSite.id, currentPath);
+          setRenamingId(null);
+          setDeleteTarget(null);
+          setIsCreatingFolder(false); // Reset creating state on path change
       }
   }, [selectedSiteId, currentPath, selectedSite]); // Reload when site or path changes
 
   const handleNavigate = (folderName: string) => {
+      if (renamingId || isCreatingFolder) return; // Prevent navigation while editing
       const newPath = currentPath === '/' ? `/${folderName}` : `${currentPath}/${folderName}`;
       setCurrentPath(newPath);
   };
@@ -49,10 +64,28 @@ export const FileManager: React.FC<FileManagerProps> = ({ sites }) => {
       setCurrentPath(newPath);
   };
 
-  const handleCreateFolderClick = async () => {
-      const name = prompt("Enter folder name:");
-      if (name && selectedSite) {
-          await createFolder(selectedSite.id, currentPath, name);
+  const handleCreateFolderClick = () => {
+      setIsCreatingFolder(true);
+      setNewFolderName('New Folder');
+  };
+
+  const submitCreateFolder = async () => {
+      if (!newFolderName.trim() || !selectedSite) return;
+      await createFolder(selectedSite.id, currentPath, newFolderName);
+      setIsCreatingFolder(false);
+      setNewFolderName('');
+  };
+
+  const cancelCreateFolder = () => {
+      setIsCreatingFolder(false);
+      setNewFolderName('');
+  };
+
+  const handleCreateFolderKeyDown = (e: React.KeyboardEvent) => {
+      if (e.key === 'Enter') {
+          submitCreateFolder();
+      } else if (e.key === 'Escape') {
+          cancelCreateFolder();
       }
   };
 
@@ -70,22 +103,56 @@ export const FileManager: React.FC<FileManagerProps> = ({ sites }) => {
       }
   };
 
-  const handleRenameClick = async (e: React.MouseEvent, node: FileNode) => {
+  const handleRenameClick = (e: React.MouseEvent, node: FileNode) => {
       e.stopPropagation();
       e.preventDefault();
-      const newName = prompt(`Rename ${node.name} to:`, node.name);
-      if (newName && newName !== node.name && selectedSite) {
-          await renameFile(selectedSite.id, currentPath, node.name, newName);
+      setRenamingId(node.id);
+      setRenameValue(node.name);
+      setIsCreatingFolder(false); // Close create mode if open
+  };
+
+  const submitRename = async () => {
+      if (!selectedSite || !renamingId) return;
+      
+      const file = currentFiles.find(f => f.id === renamingId);
+      if (!file) {
+          setRenamingId(null);
+          return;
+      }
+
+      // Only call API if name actually changed and is valid
+      if (renameValue.trim() && renameValue !== file.name) {
+          await renameFile(selectedSite.id, currentPath, file.name, renameValue);
+      }
+      
+      setRenamingId(null);
+      setRenameValue('');
+  };
+
+  const cancelRename = () => {
+      setRenamingId(null);
+      setRenameValue('');
+  };
+
+  const handleRenameKeyDown = (e: React.KeyboardEvent) => {
+      if (e.key === 'Enter') {
+          submitRename();
+      } else if (e.key === 'Escape') {
+          cancelRename();
       }
   };
 
-  const handleDeleteClick = async (e: React.MouseEvent, node: FileNode) => {
+  const handleDeleteClick = (e: React.MouseEvent, node: FileNode) => {
       e.stopPropagation();
       e.preventDefault();
-      if (confirm(`Are you sure you want to delete ${node.name}? ${node.type === 'folder' ? 'All contents inside will be permanently deleted.' : ''}`)) {
-          if (selectedSite) {
-              await deleteFile(selectedSite.id, currentPath, node.name);
-          }
+      // Set the target to show the modal
+      setDeleteTarget(node);
+  };
+
+  const confirmDelete = async () => {
+      if (selectedSite && deleteTarget) {
+          await deleteFile(selectedSite.id, currentPath, deleteTarget.name);
+          setDeleteTarget(null);
       }
   };
 
@@ -132,18 +199,22 @@ export const FileManager: React.FC<FileManagerProps> = ({ sites }) => {
       )
   }
 
+  // Determine if we should show the empty state or the list (including the new folder row)
+  const showList = currentFiles.length > 0 || isCreatingFolder;
+
   return (
     <Card 
       title="File Manager" 
       action={<SiteSelector />}
-      className="h-[650px] flex flex-col"
+      className="h-[650px] flex flex-col relative"
     >
       <div className="mb-4 pb-4 border-b border-slate-100 flex flex-col gap-3">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2">
                 <button 
                     onClick={handleCreateFolderClick}
-                    className="px-3 py-1.5 text-sm bg-white border border-slate-300 text-slate-700 rounded hover:bg-slate-50 transition-colors flex items-center gap-1"
+                    disabled={isCreatingFolder}
+                    className={`px-3 py-1.5 text-sm bg-white border border-slate-300 text-slate-700 rounded hover:bg-slate-50 transition-colors flex items-center gap-1 ${isCreatingFolder ? 'opacity-50 cursor-not-allowed' : ''}`}
                 >
                     <Plus className="w-4 h-4" /> New Folder
                 </button>
@@ -212,28 +283,74 @@ export const FileManager: React.FC<FileManagerProps> = ({ sites }) => {
             </div>
         )}
         
-        {currentFiles.length > 0 ? (
+        {showList ? (
           <div className="divide-y divide-slate-100">
+            {/* Inline New Folder Creation Row */}
+            {isCreatingFolder && (
+                <div className="grid grid-cols-12 gap-4 px-4 py-3 bg-indigo-50 items-center text-sm h-[53px] animate-in slide-in-from-top-2 fade-in">
+                    <div className="col-span-6 flex items-center gap-3">
+                        <Folder className="w-5 h-5 text-blue-400 fill-blue-50 shrink-0" />
+                        <div className="flex items-center gap-1 w-full">
+                            <input 
+                                type="text" 
+                                value={newFolderName}
+                                onChange={(e) => setNewFolderName(e.target.value)}
+                                onKeyDown={handleCreateFolderKeyDown}
+                                autoFocus
+                                className="w-full px-2 py-1 text-sm border border-indigo-300 rounded shadow-sm focus:ring-2 focus:ring-indigo-200 outline-none bg-white"
+                                placeholder="Folder Name"
+                            />
+                            <button onClick={submitCreateFolder} className="p-1 bg-emerald-100 text-emerald-700 rounded hover:bg-emerald-200"><Check className="w-3.5 h-3.5" /></button>
+                            <button onClick={cancelCreateFolder} className="p-1 bg-red-100 text-red-600 rounded hover:bg-red-200"><X className="w-3.5 h-3.5" /></button>
+                        </div>
+                    </div>
+                    <div className="col-span-3 text-slate-400 font-mono text-xs">-</div>
+                    <div className="col-span-3"></div>
+                </div>
+            )}
+
             {currentFiles.map((file) => (
               <div 
                 key={file.id} 
-                className="grid grid-cols-12 gap-4 px-4 py-3 hover:bg-white items-center text-sm group transition-all cursor-pointer hover:shadow-sm"
+                className="grid grid-cols-12 gap-4 px-4 py-3 hover:bg-white items-center text-sm group transition-all cursor-pointer hover:shadow-sm h-[53px]"
                 onDoubleClick={() => file.type === 'folder' && handleNavigate(file.name)}
               >
                 <div className="col-span-6 flex items-center gap-3 text-slate-700 group-hover:text-indigo-700 transition-colors">
                   {file.type === 'folder' ? 
-                    <Folder className="w-5 h-5 text-blue-400 fill-blue-50" /> : 
-                    <FileIcon className={`w-5 h-5 ${file.name.endsWith('.zip') ? 'text-orange-500' : 'text-slate-400'}`} />
+                    <Folder className="w-5 h-5 text-blue-400 fill-blue-50 shrink-0" /> : 
+                    <FileIcon className={`w-5 h-5 shrink-0 ${file.name.endsWith('.zip') ? 'text-orange-500' : 'text-slate-400'}`} />
                   }
-                  <span className="font-medium truncate">{file.name}</span>
-                </div>
-                <div className="col-span-3 text-slate-500 font-mono text-xs">{file.size}</div>
-                <div className="col-span-3 flex justify-end gap-2 opacity-0 group-hover:opacity-100 transition-all transform translate-x-2 group-hover:translate-x-0">
-                  {file.type === 'file' && (
-                       <button onClick={(e) => handleDownloadClick(e, file)} className="p-1.5 hover:bg-slate-100 text-slate-500 hover:text-indigo-600 rounded transition-colors relative z-20" title="Download"><Download className="w-3.5 h-3.5" /></button>
+                  
+                  {renamingId === file.id ? (
+                      <div className="flex items-center gap-1 w-full" onClick={(e) => e.stopPropagation()}>
+                          <input 
+                              type="text" 
+                              value={renameValue}
+                              onChange={(e) => setRenameValue(e.target.value)}
+                              onKeyDown={handleRenameKeyDown}
+                              autoFocus
+                              className="w-full px-2 py-1 text-sm border border-indigo-300 rounded shadow-sm focus:ring-2 focus:ring-indigo-200 outline-none"
+                          />
+                          <button onClick={(e) => { e.stopPropagation(); submitRename(); }} className="p-1 bg-emerald-50 text-emerald-600 rounded hover:bg-emerald-100"><Check className="w-3 h-3" /></button>
+                          <button onClick={(e) => { e.stopPropagation(); cancelRename(); }} className="p-1 bg-red-50 text-red-500 rounded hover:bg-red-100"><X className="w-3 h-3" /></button>
+                      </div>
+                  ) : (
+                      <span className="font-medium truncate">{file.name}</span>
                   )}
-                  <button onClick={(e) => handleRenameClick(e, file)} className="p-1.5 hover:bg-slate-100 text-slate-500 hover:text-indigo-600 rounded transition-colors relative z-20" title="Rename"><Edit2 className="w-3.5 h-3.5" /></button>
-                  <button onClick={(e) => handleDeleteClick(e, file)} className="p-1.5 hover:bg-red-50 text-slate-400 hover:text-red-600 rounded transition-colors relative z-20" title="Delete"><Trash2 className="w-3.5 h-3.5" /></button>
+                </div>
+                
+                <div className="col-span-3 text-slate-500 font-mono text-xs">{file.size}</div>
+                
+                <div className="col-span-3 flex justify-end gap-2">
+                  {!renamingId && (
+                      <div className="opacity-0 group-hover:opacity-100 transition-all transform translate-x-2 group-hover:translate-x-0 flex gap-2">
+                          {file.type === 'file' && (
+                               <button onClick={(e) => handleDownloadClick(e, file)} className="p-1.5 hover:bg-slate-100 text-slate-500 hover:text-indigo-600 rounded transition-colors" title="Download"><Download className="w-3.5 h-3.5" /></button>
+                          )}
+                          <button onClick={(e) => handleRenameClick(e, file)} className="p-1.5 hover:bg-slate-100 text-slate-500 hover:text-indigo-600 rounded transition-colors" title="Rename"><Edit2 className="w-3.5 h-3.5" /></button>
+                          <button onClick={(e) => handleDeleteClick(e, file)} className="p-1.5 hover:bg-red-50 text-slate-400 hover:text-red-600 rounded transition-colors" title="Delete"><Trash2 className="w-3.5 h-3.5" /></button>
+                      </div>
+                  )}
                 </div>
               </div>
             ))}
@@ -252,6 +369,33 @@ export const FileManager: React.FC<FileManagerProps> = ({ sites }) => {
         <div>{currentFiles.length} items</div>
         <div>Total Used: {selectedSite.storageUsed} MB</div>
       </div>
+
+      {/* Delete Confirmation Modal */}
+      {deleteTarget && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center p-4">
+            <div className="absolute inset-0 bg-slate-900/60 backdrop-blur-sm transition-opacity" onClick={() => setDeleteTarget(null)} />
+            <div className="relative w-full max-w-sm bg-white rounded-xl shadow-2xl p-6 animate-in fade-in zoom-in-95 duration-200">
+                <div className="flex items-start gap-4">
+                    <div className="p-3 bg-red-100 rounded-full shrink-0"><AlertTriangle className="w-6 h-6 text-red-600" /></div>
+                    <div>
+                        <h3 className="text-lg font-bold text-slate-900">Delete Item?</h3>
+                        <p className="text-sm text-slate-500 mt-1">
+                            Are you sure you want to delete <span className="font-bold text-slate-800">{deleteTarget.name}</span>?
+                        </p>
+                        {deleteTarget.type === 'folder' && (
+                             <p className="text-xs text-red-600 mt-2 bg-red-50 p-2 rounded border border-red-100">
+                                Warning: All contents inside this folder will be permanently deleted.
+                             </p>
+                        )}
+                    </div>
+                </div>
+                <div className="mt-6 flex justify-end gap-3">
+                    <button onClick={() => setDeleteTarget(null)} className="px-4 py-2 text-slate-600 hover:bg-slate-50 rounded-lg font-medium text-sm transition-colors">Cancel</button>
+                    <button onClick={confirmDelete} className="px-4 py-2 bg-red-600 text-white rounded-lg font-medium text-sm hover:bg-red-700 shadow-sm transition-colors">Delete</button>
+                </div>
+            </div>
+        </div>
+      )}
     </Card>
   );
 };

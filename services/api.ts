@@ -119,9 +119,20 @@ export const api = {
         const name = formData.get('name') as string;
         const framework = formData.get('framework') as Framework;
         const subdomain = formData.get('subdomain') as string;
-        const needsDatabase = formData.get('needsDatabase') === 'true';
-        // We ignore the actual binary file for localStorage, but we generate the tree
         
+        let needsDatabase = formData.get('needsDatabase') === 'true';
+        const attachedDatabaseId = formData.get('attachedDatabaseId') as string;
+
+        let sites = getStorage<Site[]>(DB_KEYS.SITES, []);
+
+        // Logic for re-attaching database
+        if (attachedDatabaseId) {
+             // 1. Remove the old site that was holding the DB (orphaned)
+             sites = sites.filter(s => s.id !== attachedDatabaseId);
+             // 2. The new site will have a database attached
+             needsDatabase = true;
+        }
+
         const newSite: Site = {
             id: `s_${Date.now()}`,
             userId,
@@ -134,8 +145,7 @@ export const api = {
             hasDatabase: needsDatabase
         };
 
-        // Save Site
-        const sites = getStorage<Site[]>(DB_KEYS.SITES, []);
+        // Save new site (and potentially removed old orphan site in same array update)
         sites.push(newSite);
         setStorage(DB_KEYS.SITES, sites);
 
@@ -166,12 +176,31 @@ export const api = {
         throw new Error('Site not found');
     },
     create: async (data: any) => Promise.reject("Use deploy"),
-    delete: async (siteId: string) => {
+    delete: async (siteId: string, deleteDb: boolean = true) => {
         let sites = getStorage<Site[]>(DB_KEYS.SITES, []);
-        sites = sites.filter(s => s.id !== siteId);
+        
+        if (deleteDb) {
+            // Full delete: Remove site record completely
+            sites = sites.filter(s => s.id !== siteId);
+        } else {
+            // Soft delete: Keep record for DB reference, but mark as DB_ONLY
+            sites = sites.map(s => {
+                if (s.id === siteId) {
+                    return {
+                        ...s,
+                        status: SiteStatus.DB_ONLY,
+                        // We keep the name but maybe append a note conceptually, 
+                        // though visually we will handle it in frontend.
+                        storageUsed: 0 // Files are gone
+                    };
+                }
+                return s;
+            });
+        }
+        
         setStorage(DB_KEYS.SITES, sites);
 
-        // Delete associated files
+        // Delete associated files (Files are always deleted when site is deleted, regardless of DB choice)
         let files = getStorage<any[]>(DB_KEYS.FILES, []);
         files = files.filter(f => f.siteId !== siteId);
         setStorage(DB_KEYS.FILES, files);

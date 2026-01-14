@@ -8,7 +8,8 @@ export enum SiteStatus {
   ACTIVE = 'ACTIVE',
   DEPLOYING = 'DEPLOYING',
   SUSPENDED = 'SUSPENDED',
-  FAILED = 'FAILED'
+  FAILED = 'FAILED',
+  DB_ONLY = 'DB_ONLY' // Indicates web files are deleted but DB is preserved
 }
 
 export enum Framework {

@@ -73,6 +73,41 @@ export const api = {
             headers: getAuthHeadersMultipart(),
             body: formData
         });
+        
+        // If response is 202, poll job status
+        if (res.status === 202) {
+            const data = await handleResponse(res);
+            const jobId = data.jobId;
+            
+            let attempts = 0;
+            const maxAttempts = 300; // 5 minutes max (1 poll per second)
+            
+            while (attempts < maxAttempts) {
+                await new Promise(r => setTimeout(r, 1000)); // Wait 1 second
+                
+                const jobRes = await fetch(`${API_URL}/deploy/${jobId}`, {
+                    headers: getAuthHeaders(),
+                });
+                
+                if (!jobRes.ok) {
+                    throw new Error('Failed to fetch deployment status');
+                }
+                
+                const job = await jobRes.json();
+                
+                if (job.status === 'completed') {
+                    return job.result.site;
+                } else if (job.status === 'failed') {
+                    throw new Error(job.error || 'Deployment failed');
+                }
+                
+                attempts++;
+            }
+            
+            throw new Error('Deployment timeout');
+        }
+        
+        // Legacy: direct response (for backward compatibility)
         return handleResponse(res);
     },
     update: async (siteId: string, data: Partial<Site>): Promise<Site> => {

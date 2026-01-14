@@ -9,22 +9,43 @@ interface SidebarProps {
   currentView: string;
   setCurrentView: (view: any) => void;
   onLogout: () => void;
+  notifications: Record<string, boolean>; // New prop for notification state
 }
 
-export const Sidebar: React.FC<SidebarProps> = ({ user, isOpen, setIsOpen, currentView, setCurrentView, onLogout }) => {
-  const NavItem = ({ view, icon: Icon, label }: { view: string, icon: any, label: string }) => (
-    <button 
-      onClick={() => {
-        setCurrentView(view);
-        // On mobile, auto close sidebar on selection
-        if (window.innerWidth < 768) setIsOpen(false);
-      }}
-      className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg text-sm font-medium transition-colors ${currentView === view ? 'bg-indigo-600 text-white shadow-md' : 'text-slate-400 hover:bg-slate-800 hover:text-white'}`}
-    >
-      <Icon className="w-5 h-5" />
-      {label}
-    </button>
-  );
+export const Sidebar: React.FC<SidebarProps> = ({ user, isOpen, setIsOpen, currentView, setCurrentView, onLogout, notifications = {} }) => {
+  
+  const NavItem = ({ view, icon: Icon, label }: { view: string, icon: any, label: string }) => {
+    const hasNotification = notifications[view];
+    const isActive = currentView === view;
+
+    return (
+      <button 
+        onClick={() => {
+          setCurrentView(view);
+          // On mobile, auto close sidebar on selection
+          if (window.innerWidth < 768) setIsOpen(false);
+        }}
+        className={`w-full flex items-center justify-between px-4 py-3 rounded-lg text-sm font-medium transition-all duration-200 group relative
+          ${isActive 
+            ? 'bg-indigo-600 text-white shadow-md' 
+            : 'text-slate-400 hover:bg-slate-800 hover:text-white' // Always keep standard style for inactive items
+          }`}
+      >
+        <div className="flex items-center gap-3">
+          <Icon className="w-5 h-5" />
+          {label}
+        </div>
+        
+        {/* Red Dot Indicator - Only show dot, no background change */}
+        {!isActive && hasNotification && (
+          <span className="flex h-2.5 w-2.5 relative">
+            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-rose-400 opacity-75"></span>
+            <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-rose-500"></span>
+          </span>
+        )}
+      </button>
+    );
+  };
 
   return (
     <aside className={`fixed inset-y-0 left-0 z-50 w-64 bg-slate-900 text-white transform transition-transform duration-300 ease-in-out ${isOpen ? 'translate-x-0' : '-translate-x-full'} md:relative md:translate-x-0`}>

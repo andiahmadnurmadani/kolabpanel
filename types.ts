@@ -61,6 +61,7 @@ export interface Payment {
   username: string; // denormalized for easy display
   amount: number;
   plan: string;
+  method: 'BANK' | 'QR';
   status: PaymentStatus;
   date: string;
   proofUrl: string;

@@ -84,7 +84,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ user, isOpen, setIsOpen, curre
             <NavItem view="ADMIN_APACHE" icon={Settings} label="Apache Config" />
             
             <div className="text-xs font-bold text-slate-500 uppercase tracking-wider px-4 mb-2 mt-8">System</div>
-            <NavItem view="ARCHITECTURE" icon={FileText} label="Architecture Docs" />
+            <NavItem view="ADMIN_PROFILE" icon={UserIcon} label="My Profile" />
           </>
         )}
       </nav>

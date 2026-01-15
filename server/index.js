@@ -287,8 +287,9 @@ app.put('/api/files/rename', (req, res) => {
     }
 });
 
-// 4. Admin (Standard In-Memory)
+// 4. Admin API (Stats)
 app.get('/api/admin/stats', (req, res) => {
+    // Note: Tunnels & Apache stats are now fetched from their respective external APIs by the frontend
     res.json({
         totalUsers: users.length,
         totalSites: sites.length,

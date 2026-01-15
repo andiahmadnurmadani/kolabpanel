@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Card } from '../../components/Shared';
 import { api } from '../../services/api';
-import { FileCode, Settings, RefreshCw, Plus, Trash2, Edit2, Save, X, Loader2, AlertTriangle, CheckCircle2, Network, CheckCircle, AlertOctagon } from 'lucide-react';
+import { FileCode, Settings, RefreshCw, Plus, Trash2, Edit2, Save, X, Loader2, AlertTriangle, CheckCircle, AlertOctagon } from 'lucide-react';
 
 export const ApacheManager: React.FC = () => {
   const [activeTab, setActiveTab] = useState<'SITES' | 'HTTPD'>('SITES');
@@ -11,7 +11,6 @@ export const ApacheManager: React.FC = () => {
   // Data State
   const [sites, setSites] = useState<string[]>([]);
   const [httpdContent, setHttpdContent] = useState('');
-  const [quickPort, setQuickPort] = useState('');
   
   // Editor State
   const [editorMode, setEditorMode] = useState<'EDIT_SITE' | 'CREATE_SITE' | null>(null);
@@ -112,16 +111,18 @@ export const ApacheManager: React.FC = () => {
       try {
           let successMessage = "";
           if (editorMode === 'CREATE_SITE') {
-              // Automatically append .test.conf suffix
-              const finalName = `${currentFileName.trim()}.test.conf`;
+              // Automatically append .test.conf suffix if not present
+              let finalName = currentFileName.trim();
+              
               await api.admin.apache.createSite(finalName, editorContent);
-              setSites([...sites, finalName]);
+              setSites([...sites, finalName]); // Ideally should refresh list from API
               successMessage = `Virtual Host "${finalName}" created successfully.`;
           } else {
               await api.admin.apache.updateSite(currentFileName, editorContent);
               successMessage = `Configuration for "${currentFileName}" updated successfully.`;
           }
           setEditorMode(null);
+          loadData(); // Refresh list to be sure
           
           // Show Success Popup
           setFeedback({
@@ -143,51 +144,7 @@ export const ApacheManager: React.FC = () => {
       }
   };
 
-  const handleAddPort = () => {
-      if (!quickPort || isNaN(Number(quickPort))) {
-          // Use feedback modal for validation error too
-          setFeedback({
-              isOpen: true,
-              type: 'error',
-              title: 'Invalid Port',
-              message: 'Please enter a valid numeric port number (e.g. 8080).'
-          });
-          return;
-      }
-
-      const lines = httpdContent.split('\n');
-      let insertIndex = -1;
-
-      // Find the last occurrence of a Listen directive
-      for (let i = 0; i < lines.length; i++) {
-          if (lines[i].trim().startsWith('Listen ')) {
-              insertIndex = i;
-          }
-      }
-
-      const newLine = `Listen ${quickPort}`;
-
-      if (insertIndex !== -1) {
-          lines.splice(insertIndex + 1, 0, newLine);
-      } else {
-          // If no Listen found, append to end
-          lines.push(newLine);
-      }
-
-      setHttpdContent(lines.join('\n'));
-      setQuickPort('');
-      
-      // Notify user they need to save
-      setFeedback({
-          isOpen: true,
-          type: 'success',
-          title: 'Port Added to Editor',
-          message: `Port ${quickPort} has been added to the configuration text below. Please click 'Save Configuration' to apply changes.`
-      });
-  };
-
   const handleSaveHttpd = async () => {
-      // Direct save without confirm dialog (Modal will show result)
       setIsSaving(true);
       try {
           await api.admin.apache.updateHttpd(httpdContent);
@@ -321,6 +278,7 @@ export const ApacheManager: React.FC = () => {
                 <table className="min-w-full text-left text-sm">
                     <thead className="bg-slate-50 text-slate-500 border-b border-slate-200">
                         <tr>
+                            <th className="px-6 py-3 font-medium w-16 text-center">#</th>
                             <th className="px-6 py-3 font-medium">Config Filename</th>
                             <th className="px-6 py-3 font-medium text-right">Actions</th>
                         </tr>
@@ -328,6 +286,7 @@ export const ApacheManager: React.FC = () => {
                     <tbody className="divide-y divide-slate-100">
                         {sites.map((site, idx) => (
                             <tr key={idx} className="hover:bg-slate-50/50">
+                                <td className="px-6 py-4 text-slate-500 font-mono text-xs text-center">{idx + 1}</td>
                                 <td className="px-6 py-4 font-mono text-slate-700 font-medium">{site}</td>
                                 <td className="px-6 py-4 text-right">
                                     <div className="flex justify-end gap-2">
@@ -342,7 +301,7 @@ export const ApacheManager: React.FC = () => {
                             </tr>
                         ))}
                         {sites.length === 0 && (
-                            <tr><td colSpan={2} className="px-6 py-12 text-center text-slate-500 italic">No virtual hosts found in sites-enabled.</td></tr>
+                            <tr><td colSpan={3} className="px-6 py-12 text-center text-slate-500 italic">No virtual hosts found in sites-enabled.</td></tr>
                         )}
                     </tbody>
                 </table>
@@ -350,31 +309,6 @@ export const ApacheManager: React.FC = () => {
           </Card>
       ) : (
           <Card title="Global Configuration (httpd.conf)">
-              {/* Quick Action Bar */}
-              <div className="mb-4 p-4 bg-slate-50 border border-slate-200 rounded-lg flex flex-col sm:flex-row items-start sm:items-center gap-4">
-                  <div className="flex-1">
-                      <h4 className="text-sm font-bold text-slate-700 flex items-center gap-2">
-                          <Network className="w-4 h-4 text-indigo-600"/> Quick Add Port
-                      </h4>
-                      <p className="text-xs text-slate-500 mt-1">Appends a new <code className="bg-slate-200 px-1 rounded">Listen [port]</code> directive below existing listeners.</p>
-                  </div>
-                  <div className="flex items-center gap-2 w-full sm:w-auto">
-                      <input
-                          type="number"
-                          value={quickPort}
-                          onChange={(e) => setQuickPort(e.target.value)}
-                          placeholder="e.g. 9062"
-                          className="px-3 py-2 border border-slate-300 rounded-lg text-sm w-full sm:w-32 focus:ring-2 focus:ring-indigo-500 outline-none"
-                      />
-                      <button
-                          onClick={handleAddPort}
-                          className="px-4 py-2 bg-indigo-600 text-white rounded-lg text-sm font-medium hover:bg-indigo-700 whitespace-nowrap"
-                      >
-                          Add Port
-                      </button>
-                  </div>
-              </div>
-
               <div className="bg-slate-900 rounded-lg p-1 border border-slate-700">
                   <textarea 
                       value={httpdContent}
@@ -387,7 +321,7 @@ export const ApacheManager: React.FC = () => {
                   <button 
                       onClick={handleSaveHttpd} 
                       disabled={isSaving}
-                      className="px-6 py-2 bg-indigo-600 text-white rounded-lg font-medium shadow-sm hover:bg-indigo-700 flex items-center gap-2"
+                      className="px-6 py-2 bg-indigo-600 text-white rounded-lg font-medium shadow-sm hover:bg-indigo-700 flex items-center gap-2 disabled:opacity-50"
                   >
                       {isSaving && <Loader2 className="w-4 h-4 animate-spin" />}
                       Save Configuration
@@ -414,12 +348,9 @@ export const ApacheManager: React.FC = () => {
                                   type="text" 
                                   value={currentFileName} 
                                   onChange={(e) => setCurrentFileName(e.target.value)}
-                                  placeholder="mysite" 
-                                  className="flex-1 px-3 py-2 border border-slate-300 border-r-0 rounded-l-lg focus:ring-2 focus:ring-indigo-500 outline-none"
+                                  placeholder="mysite.test.conf" 
+                                  className="flex-1 px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none"
                               />
-                              <span className="px-3 py-2 bg-slate-100 border border-slate-300 border-l-0 rounded-r-lg text-slate-500 font-mono text-sm">
-                                  .test.conf
-                              </span>
                           </div>
                       </div>
                   )}

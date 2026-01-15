@@ -1,4 +1,4 @@
-import { User, Site, HostingPlan, Domain, Payment, Framework, FileNode, SiteStatus, PaymentStatus, SupportTicket, ChatMessage, TunnelRoute } from '../types';
+import { User, Site, HostingPlan, Domain, Payment, Framework, FileNode, SiteStatus, PaymentStatus, SupportTicket, ChatMessage, TunnelRoute, DiscountCode } from '../types';
 import { getMockFiles } from '../constants';
 import { 
     DB_KEYS, 
@@ -6,14 +6,19 @@ import {
     INITIAL_PASSWORDS, 
     INITIAL_PLANS, 
     INITIAL_DOMAINS, 
+    INITIAL_TUNNELS,
     getStorage, 
     setStorage, 
     delay 
 } from './mockData';
 
-// --- MOCK IMPLEMENTATION ---
-
+const API_URL = 'http://localhost:5000/api';
+const TUNNEL_API_URL = 'https://cloudflare.kolab.top';
 const APACHE_API_URL = 'https://api-apache.kolab.top';
+
+// --- HYBRID IMPLEMENTATION ---
+// Some features (Auth, Sites, Billing) use LocalStorage for Client-Side Demo
+// Admin Config features (Tunnels, Apache) use Real External APIs or Fallback Mocks
 
 export const api = {
   auth: {
@@ -219,6 +224,12 @@ export const api = {
     getHistory: async (userId: string): Promise<Payment[]> => {
         const payments = getStorage<Payment[]>(DB_KEYS.PAYMENTS, []);
         return delay(payments.filter(p => p.userId === userId));
+    },
+    validateCoupon: async (code: string): Promise<DiscountCode> => {
+        const discounts = getStorage<DiscountCode[]>(DB_KEYS.DISCOUNTS, []);
+        const found = discounts.find(d => d.code === code && d.status === 'ACTIVE');
+        if (found) return delay(found);
+        throw new Error('Invalid or expired coupon');
     }
   },
 
@@ -287,21 +298,212 @@ export const api = {
     getStats: async () => {
        const users = getStorage(DB_KEYS.USERS, INITIAL_USERS);
        const sites = getStorage(DB_KEYS.SITES, []);
+       const payments = getStorage<Payment[]>(DB_KEYS.PAYMENTS, []);
+       
+       const totalRevenue = payments
+           .filter(p => p.status === PaymentStatus.VERIFIED)
+           .reduce((sum, p) => sum + p.amount, 0);
+
+       let formattedRevenue = totalRevenue.toLocaleString('id-ID');
+       if (totalRevenue > 1000000) {
+           formattedRevenue = (totalRevenue / 1000000).toFixed(1) + 'M';
+       }
+
+       // FETCH REAL TUNNEL COUNT
+       let totalTunnels = 4; // Default/Fallback
+       try {
+           const res = await fetch(`${TUNNEL_API_URL}/routes`);
+           if (res.ok) {
+               const routes = await res.json();
+               if (Array.isArray(routes)) {
+                   totalTunnels = routes.length;
+               }
+           }
+       } catch (e) {
+           console.warn("Failed to fetch real tunnel count, using fallback.");
+       }
+
        return delay({
            totalUsers: users.length,
            totalSites: sites.length,
-           activeRevenue: '0'
+           activeRevenue: formattedRevenue,
+           totalTunnels: totalTunnels,
+           totalApacheSites: 3
        });
     },
+    getRevenueAnalytics: async () => {
+        const payments = getStorage<Payment[]>(DB_KEYS.PAYMENTS, []);
+        const verifiedPayments = payments.filter(p => p.status === PaymentStatus.VERIFIED);
+        
+        // Generate last 7 days
+        const last7Days = [];
+        for (let i = 6; i >= 0; i--) {
+            const d = new Date();
+            d.setDate(d.getDate() - i);
+            const dateStr = d.toISOString().split('T')[0];
+            const dayName = d.toLocaleDateString('en-US', { weekday: 'short' });
+            
+            last7Days.push({
+                date: dateStr,
+                name: dayName,
+                income: 0
+            });
+        }
+
+        verifiedPayments.forEach(p => {
+            const day = last7Days.find(d => d.date === p.date);
+            if (day) {
+                day.income += p.amount;
+            }
+        });
+
+        return delay(last7Days);
+    },
+    getTunnelAnalytics: async (limit: number = 5) => {
+        try {
+            const res = await fetch(`${TUNNEL_API_URL}/analytics/top-hosts?limit=${limit}`);
+            if (!res.ok) throw new Error("Analytics API Error");
+            const result = await res.json();
+            return { data: result.data };
+        } catch (e) {
+            console.warn("Using LocalStorage fallback for Analytics", e);
+            // Return mock data suitable for list and chart
+            return delay({ data: [
+                { host: 'api.kolabpanel.com', visits: 1250, rank: 1 },
+                { host: 'demo.kolabpanel.com', visits: 850, rank: 2 },
+                { host: 'admin.kolabpanel.com', visits: 400, rank: 3 },
+            ]});
+        }
+    },
     getUsers: async (): Promise<User[]> => {
-       return delay(getStorage(DB_KEYS.USERS, INITIAL_USERS));
+       const users = getStorage(DB_KEYS.USERS, INITIAL_USERS);
+       const now = new Date();
+       let hasUpdates = false;
+
+       // CRON JOB SIMULATION: Check for expired plans
+       // If expired, Auto-Suspend and Redirect Tunnels
+       const tunnels = getStorage<TunnelRoute[]>(DB_KEYS.TUNNELS, INITIAL_TUNNELS);
+       const sites = getStorage<Site[]>(DB_KEYS.SITES, []);
+
+       users.forEach(user => {
+           if (user.status === 'ACTIVE' && user.planExpiresAt) {
+               const expires = new Date(user.planExpiresAt);
+               if (now > expires) {
+                   // PLAN EXPIRED: Auto Suspend
+                   user.status = 'SUSPENDED';
+                   hasUpdates = true;
+
+                   // Trigger Tunnel Redirect Logic
+                   const userSites = sites.filter(s => s.userId === user.id);
+                   userSites.forEach(site => {
+                        const likelyHostname = `${site.subdomain}.kolabpanel.com`;
+                        const tunnelIndex = tunnels.findIndex(t => t.hostname === likelyHostname);
+                        if (tunnelIndex !== -1) {
+                            tunnels[tunnelIndex].service = 'http://127.0.0.1:80'; // Redirect to Maintenance
+                        }
+                   });
+               }
+           }
+       });
+
+       if (hasUpdates) {
+           setStorage(DB_KEYS.USERS, users);
+           setStorage(DB_KEYS.TUNNELS, tunnels);
+       }
+
+       return delay(users);
+    },
+    createUser: async (data: any): Promise<User> => {
+        const users = getStorage<User[]>(DB_KEYS.USERS, INITIAL_USERS);
+        
+        // Basic Validation
+        if (users.find(u => u.username === data.username)) throw new Error('Username already exists');
+        if (users.find(u => u.email === data.email)) throw new Error('Email already exists');
+
+        const newUser: User = {
+            id: `u_${Date.now()}`,
+            username: data.username,
+            email: data.email,
+            role: data.role,
+            plan: data.plan,
+            avatar: `https://ui-avatars.com/api/?name=${data.username}&background=random`,
+            status: 'ACTIVE',
+            // Default 30 days expiry, or null if logic requires
+            planExpiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString()
+        };
+
+        users.push(newUser);
+        setStorage(DB_KEYS.USERS, users);
+
+        // Store Password
+        const passwords = getStorage<Record<string, string>>(DB_KEYS.PASSWORDS, INITIAL_PASSWORDS);
+        passwords[newUser.id] = data.password;
+        setStorage(DB_KEYS.PASSWORDS, passwords);
+
+        return delay(newUser);
+    },
+    deleteUser: async (userId: string) => {
+        // 1. Remove User
+        let users = getStorage<User[]>(DB_KEYS.USERS, INITIAL_USERS);
+        users = users.filter(u => u.id !== userId);
+        setStorage(DB_KEYS.USERS, users);
+
+        // 2. Remove Password
+        const passwords = getStorage<Record<string, string>>(DB_KEYS.PASSWORDS, INITIAL_PASSWORDS);
+        if (passwords[userId]) {
+            delete passwords[userId];
+            setStorage(DB_KEYS.PASSWORDS, passwords);
+        }
+
+        // 3. Cleanup Sites owned by user
+        let sites = getStorage<Site[]>(DB_KEYS.SITES, []);
+        const userSites = sites.filter(s => s.userId === userId);
+        sites = sites.filter(s => s.userId !== userId);
+        setStorage(DB_KEYS.SITES, sites);
+
+        // 4. (Optional) Cleanup Files - For simple mock we can skip deep file deletion
+        // but let's clear the index references
+        let files = getStorage<FileNode[]>(DB_KEYS.FILES, []);
+        const userSiteIds = userSites.map(s => s.id);
+        files = files.filter(f => !userSiteIds.includes(f.siteId || '')); // Assuming FileNode has siteId
+        setStorage(DB_KEYS.FILES, files);
+
+        return delay({ success: true });
     },
     toggleUserStatus: async (userId: string) => {
         const users = getStorage<User[]>(DB_KEYS.USERS, INITIAL_USERS);
         const user = users.find(u => u.id === userId);
         if (user) {
-            user.status = user.status === 'ACTIVE' ? 'SUSPENDED' : 'ACTIVE';
+            const newStatus = user.status === 'ACTIVE' ? 'SUSPENDED' : 'ACTIVE';
+            user.status = newStatus;
             setStorage(DB_KEYS.USERS, users);
+
+            // AUTOMATED TUNNEL PORT SWITCHING
+            // If user is suspended, redirect their tunnels to port 80 (default/suspend page)
+            if (newStatus === 'SUSPENDED') {
+                const sites = getStorage<Site[]>(DB_KEYS.SITES, []);
+                const userSites = sites.filter(s => s.userId === userId);
+                const tunnels = getStorage<TunnelRoute[]>(DB_KEYS.TUNNELS, INITIAL_TUNNELS);
+                let tunnelsChanged = false;
+
+                userSites.forEach(site => {
+                    // Try to find a tunnel that matches the site's subdomain
+                    // We assume domain is kolabpanel.com for the demo match, 
+                    // or check if tunnel hostname includes the subdomain.
+                    const likelyHostname = `${site.subdomain}.kolabpanel.com`;
+                    
+                    const tunnelIndex = tunnels.findIndex(t => t.hostname === likelyHostname);
+                    
+                    if (tunnelIndex !== -1) {
+                        tunnels[tunnelIndex].service = 'http://127.0.0.1:80'; // Redirect to Apache Default/Suspend Page
+                        tunnelsChanged = true;
+                    }
+                });
+
+                if (tunnelsChanged) {
+                    setStorage(DB_KEYS.TUNNELS, tunnels);
+                }
+            }
         }
         return delay(user);
     },
@@ -320,6 +522,13 @@ export const api = {
                 const user = users.find(u => u.id === payment.userId);
                 if (user) {
                     user.plan = payment.plan;
+                    // Extend plan by 30 days
+                    const currentExpiry = user.planExpiresAt ? new Date(user.planExpiresAt) : new Date();
+                    const now = new Date();
+                    const baseDate = currentExpiry > now ? currentExpiry : now;
+                    baseDate.setDate(baseDate.getDate() + 30);
+                    user.planExpiresAt = baseDate.toISOString();
+                    
                     setStorage(DB_KEYS.USERS, users);
                 }
             }
@@ -333,11 +542,19 @@ export const api = {
         setStorage(DB_KEYS.DOMAINS, domains);
         return delay(newDomain);
     },
-    updateDomain: async (id: string, name: string) => {
+    updateDomain: async (id: string, data: Partial<Domain>) => {
         const domains = getStorage<Domain[]>(DB_KEYS.DOMAINS, INITIAL_DOMAINS);
+        
+        // Ensure only one domain is Primary if the update sets isPrimary to true
+        if (data.isPrimary) {
+            domains.forEach(d => {
+                if (d.id !== id) d.isPrimary = false;
+            });
+        }
+
         const d = domains.find(x => x.id === id);
         if (d) {
-            d.name = name;
+            Object.assign(d, data);
             setStorage(DB_KEYS.DOMAINS, domains);
         }
         return delay(d);
@@ -370,117 +587,226 @@ export const api = {
         setStorage(DB_KEYS.PLANS, plans);
         return delay({ success: true });
     },
+    discounts: {
+        list: async (): Promise<DiscountCode[]> => {
+            return delay(getStorage(DB_KEYS.DISCOUNTS, []));
+        },
+        create: async (code: string, type: 'PERCENT' | 'FIXED', value: number, validPlans: string[] = []): Promise<DiscountCode> => {
+            const discounts = getStorage<DiscountCode[]>(DB_KEYS.DISCOUNTS, []);
+            const newDiscount: DiscountCode = {
+                id: `disc_${Date.now()}`,
+                code: code.toUpperCase(),
+                type,
+                value,
+                status: 'ACTIVE',
+                validPlans,
+                createdAt: new Date().toISOString()
+            };
+            discounts.push(newDiscount);
+            setStorage(DB_KEYS.DISCOUNTS, discounts);
+            return delay(newDiscount);
+        },
+        delete: async (id: string) => {
+            let discounts = getStorage<DiscountCode[]>(DB_KEYS.DISCOUNTS, []);
+            discounts = discounts.filter(d => d.id !== id);
+            setStorage(DB_KEYS.DISCOUNTS, discounts);
+            return delay({ success: true });
+        }
+    },
     // CLOUDFLARE TUNNEL INTEGRATION
     tunnels: {
         list: async (): Promise<TunnelRoute[]> => {
             try {
-                const response = await fetch('https://cloudflare.kolab.top/routes');
-                if (!response.ok) throw new Error('Failed to fetch routes');
-                return await response.json();
-            } catch (error) {
-                console.error("Tunnel API Error:", error);
-                throw error;
+                // Try fetching from real API first
+                const res = await fetch(`${TUNNEL_API_URL}/routes`);
+                if (!res.ok) throw new Error();
+                return await res.json();
+            } catch (e) {
+                // Fallback to LocalStorage persistence for demo if network fails
+                console.warn("Using LocalStorage fallback for Tunnels List");
+                return delay(getStorage(DB_KEYS.TUNNELS, INITIAL_TUNNELS));
             }
         },
         create: async (hostname: string, service: string) => {
-            const response = await fetch('https://cloudflare.kolab.top/routes', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ hostname, service })
-            });
-            if (!response.ok) throw new Error('Failed to create route');
+            let res;
+            try {
+                // POST to Real API
+                res = await fetch(`${TUNNEL_API_URL}/routes`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ hostname, service })
+                });
+            } catch (e) {
+                // Network Error -> Fallback
+                console.warn("Using LocalStorage fallback for Create Tunnel", e);
+                const tunnels = getStorage<TunnelRoute[]>(DB_KEYS.TUNNELS, INITIAL_TUNNELS);
+                tunnels.push({ hostname, service });
+                setStorage(DB_KEYS.TUNNELS, tunnels);
+                return delay(true);
+            }
+
+            // Server reachable but might have returned error (e.g. 409 Conflict)
+            if (!res.ok) {
+                let errorMessage = 'Failed to create route';
+                try {
+                    const err = await res.json();
+                    errorMessage = err.error || errorMessage;
+                } catch { /* parse failed */ }
+                throw new Error(errorMessage);
+            }
             return true;
         },
         delete: async (hostname: string) => {
-            const response = await fetch('https://cloudflare.kolab.top/routes', {
-                method: 'DELETE',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ hostname })
-            });
-            if (!response.ok) throw new Error('Failed to delete route');
-            return true;
+             let res;
+             try {
+                res = await fetch(`${TUNNEL_API_URL}/routes`, {
+                    method: 'DELETE',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ hostname })
+                });
+             } catch (e) {
+                 // Network Error -> Fallback
+                 let tunnels = getStorage<TunnelRoute[]>(DB_KEYS.TUNNELS, INITIAL_TUNNELS);
+                 tunnels = tunnels.filter(t => t.hostname !== hostname);
+                 setStorage(DB_KEYS.TUNNELS, tunnels);
+                 return delay(true);
+             }
+
+             if (!res.ok) {
+                 let errorMessage = 'Failed to delete route';
+                 try { const err = await res.json(); errorMessage = err.error || errorMessage; } catch {}
+                 throw new Error(errorMessage);
+             }
+             return true;
         },
         edit: async (oldHostname: string, newHostname: string, service: string) => {
-            const response = await fetch('https://cloudflare.kolab.top/routes/edit', {
-                method: 'PUT',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ 
-                    hostname: oldHostname,
-                    newHostname: newHostname,
-                    service 
-                })
-            });
-            if (!response.ok) throw new Error('Failed to update route');
-            return true;
+             let res;
+             try {
+                res = await fetch(`${TUNNEL_API_URL}/routes/edit`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ hostname: oldHostname, newHostname, service })
+                });
+             } catch (e) {
+                 // Network Error -> Fallback
+                 const tunnels = getStorage<TunnelRoute[]>(DB_KEYS.TUNNELS, INITIAL_TUNNELS);
+                 const idx = tunnels.findIndex(t => t.hostname === oldHostname);
+                 if (idx !== -1) {
+                     tunnels[idx] = { hostname: newHostname, service };
+                     setStorage(DB_KEYS.TUNNELS, tunnels);
+                 }
+                 return delay(true);
+             }
+
+             if (!res.ok) {
+                 let errorMessage = 'Failed to edit route';
+                 try { const err = await res.json(); errorMessage = err.error || errorMessage; } catch {}
+                 throw new Error(errorMessage);
+             }
+             return true;
         }
     },
     // APACHE CONFIG MANAGER
     apache: {
         listSites: async (): Promise<string[]> => {
-            const res = await fetch(`${APACHE_API_URL}/sites`);
-            if (!res.ok) throw new Error('Failed to fetch sites');
-            return await res.json();
+            try {
+                const res = await fetch(`${APACHE_API_URL}/sites`);
+                if (!res.ok) throw new Error();
+                return res.json();
+            } catch (e) {
+                return delay(['000-default.conf', 'api-server.conf', 'apache-manager.conf']);
+            }
         },
         getSite: async (name: string): Promise<{content: string}> => {
-            const res = await fetch(`${APACHE_API_URL}/sites/${name}`);
-            if (!res.ok) throw new Error('Failed to fetch site config');
-            return await res.json();
+             try {
+                 const res = await fetch(`${APACHE_API_URL}/sites/${name}`);
+                 if (!res.ok) throw new Error();
+                 return res.json();
+             } catch (e) {
+                 return delay({ content: '# Error fetching content' });
+             }
         },
         createSite: async (filename: string, content: string) => {
-            const res = await fetch(`${APACHE_API_URL}/sites`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ filename, content })
-            });
-            if (!res.ok) {
-                const err = await res.json();
-                throw new Error(err.error || 'Failed to create site');
+            try {
+                const res = await fetch(`${APACHE_API_URL}/sites`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ filename, content })
+                });
+                if (!res.ok) {
+                    const err = await res.json();
+                    throw new Error(err.error || 'Failed to create site');
+                }
+                return await res.json();
+            } catch (e: any) {
+                throw new Error(e.message);
             }
-            return await res.json();
         },
         updateSite: async (name: string, content: string) => {
-             const res = await fetch(`${APACHE_API_URL}/sites/${name}`, {
-                method: 'PUT',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ content })
-            });
-            if (!res.ok) {
-                 const err = await res.json();
-                 throw new Error(err.error || 'Failed to update site');
+             try {
+                const res = await fetch(`${APACHE_API_URL}/sites/${name}`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ content })
+                });
+                if (!res.ok) {
+                    const err = await res.json();
+                    throw new Error(err.error || 'Failed to update site');
+                }
+                return await res.json();
+            } catch (e: any) {
+                throw new Error(e.message);
             }
-            return await res.json();
         },
         deleteSite: async (name: string) => {
-            const res = await fetch(`${APACHE_API_URL}/sites/${name}`, {
-                method: 'DELETE'
-            });
-            if (!res.ok) {
-                 const err = await res.json();
-                 throw new Error(err.error || 'Failed to delete site');
+            try {
+                const res = await fetch(`${APACHE_API_URL}/sites/${name}`, {
+                    method: 'DELETE'
+                });
+                if (!res.ok) {
+                    const err = await res.json();
+                    throw new Error(err.error || 'Failed to delete site');
+                }
+                return await res.json();
+            } catch (e: any) {
+                throw new Error(e.message);
             }
-            return await res.json();
         },
         getHttpd: async (): Promise<{content: string}> => {
-            const res = await fetch(`${APACHE_API_URL}/httpd`);
-            if (!res.ok) throw new Error('Failed to fetch httpd.conf');
-            return await res.json();
+            try {
+                const res = await fetch(`${APACHE_API_URL}/httpd`);
+                if (!res.ok) throw new Error();
+                return res.json();
+            } catch (e) {
+                return delay({ content: '# Fallback httpd.conf\nListen 80' });
+            }
         },
         updateHttpd: async (content: string) => {
-            const res = await fetch(`${APACHE_API_URL}/httpd`, {
-                method: 'PUT',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ content })
-            });
-             if (!res.ok) {
-                 const err = await res.json();
-                 throw new Error(err.error || 'Failed to update httpd.conf');
+             try {
+                const res = await fetch(`${APACHE_API_URL}/httpd`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ content })
+                });
+                if (!res.ok) {
+                    const err = await res.json();
+                    throw new Error(err.error || 'Failed to update httpd.conf');
+                }
+                return await res.json();
+            } catch (e: any) {
+                throw new Error(e.message);
             }
-            return await res.json();
         },
         reload: async () => {
-             const res = await fetch(`${APACHE_API_URL}/apache/reload`, { method: 'POST' });
-             if (!res.ok) throw new Error('Failed to reload Apache');
-             return await res.json();
+             try {
+                const res = await fetch(`${APACHE_API_URL}/apache/reload`, {
+                    method: 'POST'
+                });
+                if (!res.ok) throw new Error('Reload failed');
+                return await res.json();
+            } catch (e: any) {
+                throw new Error(e.message);
+            }
         }
     }
   },

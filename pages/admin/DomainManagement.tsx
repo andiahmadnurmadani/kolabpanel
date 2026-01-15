@@ -13,6 +13,10 @@ export const DomainManagement: React.FC<DomainManagementProps> = ({ domains, set
   const [newDomain, setNewDomain] = useState('');
   const [editId, setEditId] = useState<string | null>(null);
   const [editName, setEditName] = useState('');
+  const [editIsPrimary, setEditIsPrimary] = useState(false);
+
+  // Sorting: Primary domain always comes first
+  const sortedDomains = [...domains].sort((a, b) => (a.isPrimary === b.isPrimary ? 0 : a.isPrimary ? -1 : 1));
 
   const handleAdd = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -33,17 +37,28 @@ export const DomainManagement: React.FC<DomainManagementProps> = ({ domains, set
   const startEdit = (domain: Domain) => {
     setEditId(domain.id);
     setEditName(domain.name);
+    setEditIsPrimary(domain.isPrimary);
   };
 
   const cancelEdit = () => {
     setEditId(null);
     setEditName('');
+    setEditIsPrimary(false);
   };
 
   const saveEdit = async (id: string) => {
      if (editName.trim()) {
-       const updated = await api.admin.updateDomain(id, editName.trim());
-       setDomains(domains.map(d => d.id === id ? updated : d));
+       const updated = await api.admin.updateDomain(id, { name: editName.trim(), isPrimary: editIsPrimary });
+       
+       // Update logic considering the backend might flip other primary domains
+       if (editIsPrimary) {
+           setDomains(domains.map(d => 
+               d.id === id ? updated : { ...d, isPrimary: false }
+           ));
+       } else {
+           setDomains(domains.map(d => d.id === id ? updated : d));
+       }
+       
        setEditId(null);
      }
   };
@@ -97,7 +112,7 @@ export const DomainManagement: React.FC<DomainManagementProps> = ({ domains, set
                    </tr>
                  </thead>
                  <tbody className="divide-y divide-slate-100">
-                   {domains.map(domain => (
+                   {sortedDomains.map(domain => (
                      <tr key={domain.id} className="hover:bg-slate-50/50">
                        <td className="px-6 py-4 font-medium text-slate-800">
                           {editId === domain.id ? (
@@ -112,10 +127,35 @@ export const DomainManagement: React.FC<DomainManagementProps> = ({ domains, set
                           )}
                        </td>
                        <td className="px-6 py-4">
-                         {domain.isPrimary ? (
-                           <span className="px-2 py-1 bg-indigo-50 text-indigo-700 rounded text-xs font-bold">Primary</span>
+                         {editId === domain.id ? (
+                             <div className="flex items-center gap-3">
+                               <label className="inline-flex items-center cursor-pointer">
+                                 <input 
+                                   type="radio" 
+                                   name={`domainType-${domain.id}`}
+                                   checked={editIsPrimary} 
+                                   onChange={() => setEditIsPrimary(true)}
+                                   className="form-radio text-indigo-600 h-4 w-4 border-slate-300 focus:ring-indigo-500"
+                                 />
+                                 <span className="ml-1.5 text-sm text-slate-700">Primary</span>
+                               </label>
+                               <label className="inline-flex items-center cursor-pointer">
+                                 <input 
+                                   type="radio" 
+                                   name={`domainType-${domain.id}`}
+                                   checked={!editIsPrimary} 
+                                   onChange={() => setEditIsPrimary(false)}
+                                   className="form-radio text-slate-400 h-4 w-4 border-slate-300 focus:ring-slate-500"
+                                 />
+                                 <span className="ml-1.5 text-sm text-slate-700">Alias</span>
+                               </label>
+                             </div>
                          ) : (
-                           <span className="px-2 py-1 bg-slate-100 text-slate-600 rounded text-xs">Alias</span>
+                             domain.isPrimary ? (
+                               <span className="px-2 py-1 bg-indigo-50 text-indigo-700 rounded text-xs font-bold border border-indigo-100">Primary</span>
+                             ) : (
+                               <span className="px-2 py-1 bg-slate-100 text-slate-600 rounded text-xs border border-slate-200">Alias</span>
+                             )
                          )}
                        </td>
                        <td className="px-6 py-4 flex justify-end gap-2">

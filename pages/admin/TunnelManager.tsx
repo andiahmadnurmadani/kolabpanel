@@ -2,13 +2,16 @@ import React, { useState, useEffect } from 'react';
 import { Card } from '../../components/Shared';
 import { api } from '../../services/api';
 import { TunnelRoute } from '../../types';
-import { Network, Plus, RefreshCw, Trash2, Edit2, Save, X, Loader2, Globe, Server, Search, AlertTriangle, ArrowUpDown, ChevronUp, ChevronDown } from 'lucide-react';
+import { Network, Plus, RefreshCw, Trash2, Edit2, X, Loader2, Globe, Server, Search, AlertTriangle, ArrowUpDown, ChevronUp, ChevronDown, Link, FileCode, Unlink, Save, CheckCircle, AlertOctagon } from 'lucide-react';
 
 export const TunnelManager: React.FC = () => {
   const [tunnels, setTunnels] = useState<TunnelRoute[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
+  
+  // Apache Matching State
+  const [apacheConfigs, setApacheConfigs] = useState<Record<string, string>>({}); // Map<Port, Filename>
   
   // Sort State
   const [sortConfig, setSortConfig] = useState<{ key: keyof TunnelRoute; direction: 'asc' | 'desc' } | null>(null);
@@ -24,17 +27,54 @@ export const TunnelManager: React.FC = () => {
   const [tunnelToDelete, setTunnelToDelete] = useState<TunnelRoute | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
 
+  // Apache Editor State
+  const [editorOpen, setEditorOpen] = useState(false);
+  const [editingConfigName, setEditingConfigName] = useState('');
+  const [editorContent, setEditorContent] = useState('');
+  const [loadingConfig, setLoadingConfig] = useState(false);
+  const [savingConfig, setSavingConfig] = useState(false);
+
+  // Feedback State
+  const [feedback, setFeedback] = useState<{
+      isOpen: boolean;
+      type: 'success' | 'error';
+      title: string;
+      message: string;
+  }>({ isOpen: false, type: 'success', title: '', message: '' });
+
+  const closeFeedback = () => setFeedback(prev => ({ ...prev, isOpen: false }));
+
   useEffect(() => {
-    loadTunnels();
+    loadData();
   }, []);
 
-  const loadTunnels = async () => {
+  const loadData = async () => {
     try {
       setLoading(true);
-      const data = await api.admin.tunnels.list();
-      setTunnels(data);
+      const [tunnelsData, sitesList] = await Promise.all([
+          api.admin.tunnels.list(),
+          api.admin.apache.listSites()
+      ]);
+      setTunnels(tunnelsData);
+
+      // Parse Apache Configs to find ports
+      const portMap: Record<string, string> = {};
+      await Promise.all(sitesList.map(async (filename) => {
+          try {
+              const siteData = await api.admin.apache.getSite(filename);
+              // Extract port from <VirtualHost *:PORT> or <VirtualHost PORT>
+              const match = siteData.content.match(/<VirtualHost [^>]*:(\d+)>/);
+              if (match && match[1]) {
+                  portMap[match[1]] = filename;
+              }
+          } catch (e) {
+              console.error(`Failed to parse ${filename}`);
+          }
+      }));
+      setApacheConfigs(portMap);
+
     } catch (e) {
-      console.error("Failed to load tunnels", e);
+      console.error("Failed to load data", e);
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -43,7 +83,13 @@ export const TunnelManager: React.FC = () => {
 
   const handleRefresh = () => {
     setRefreshing(true);
-    loadTunnels();
+    loadData();
+  };
+
+  // Helper to extract port from tunnel service URL
+  const getTunnelPort = (serviceUrl: string) => {
+      const match = serviceUrl.match(/:(\d+)$/);
+      return match ? match[1] : null;
   };
 
   const handleSort = (key: keyof TunnelRoute) => {
@@ -76,11 +122,44 @@ export const TunnelManager: React.FC = () => {
     if (!tunnelToDelete) return;
     setIsDeleting(true);
     try {
+      // 1. Delete Tunnel Route
       await api.admin.tunnels.delete(tunnelToDelete.hostname);
+      
+      let extraMessage = "";
+      
+      // 2. Check and Delete Apache Config if exists
+      const port = getTunnelPort(tunnelToDelete.service);
+      const associatedConfig = port ? apacheConfigs[port] : null;
+
+      if (associatedConfig) {
+          try {
+              await api.admin.apache.deleteSite(associatedConfig);
+              extraMessage = ` and Apache config "${associatedConfig}"`;
+          } catch (configErr) {
+              console.error("Failed to cleanup apache config", configErr);
+              extraMessage = ` but failed to delete config "${associatedConfig}"`;
+          }
+      }
+
+      // Refresh logic is inside loadData called below, but we can optimistically update local state too
       setTunnels(tunnels.filter(t => t.hostname !== tunnelToDelete.hostname));
       setTunnelToDelete(null);
-    } catch (e) {
-      alert("Failed to delete tunnel");
+      
+      loadData(); // Reload to refresh apache list
+
+      setFeedback({
+          isOpen: true,
+          type: 'success',
+          title: 'Cleanup Successful',
+          message: `The tunnel route${extraMessage} has been removed.`
+      });
+    } catch (e: any) {
+      setFeedback({
+          isOpen: true,
+          type: 'error',
+          title: 'Delete Failed',
+          message: e.message || 'An error occurred while deleting the route.'
+      });
     } finally {
       setIsDeleting(false);
     }
@@ -90,18 +169,71 @@ export const TunnelManager: React.FC = () => {
     e.preventDefault();
     setIsSubmitting(true);
     try {
+      let message = "";
       if (modalMode === 'CREATE') {
         await api.admin.tunnels.create(formData.hostname, formData.service);
+        message = "New tunnel route created successfully on Cloudflare.";
       } else {
         await api.admin.tunnels.edit(currentHostname, formData.hostname, formData.service);
+        message = "Tunnel route configuration updated successfully.";
       }
       setIsModalOpen(false);
-      loadTunnels(); // Refresh list
-    } catch (e) {
-      alert(`Failed to ${modalMode === 'CREATE' ? 'create' : 'update'} tunnel`);
+      loadData(); // Refresh list to update matches from real API
+      
+      // Show Success Confirmation
+      setFeedback({
+          isOpen: true,
+          type: 'success',
+          title: 'Success!',
+          message: message
+      });
+
+    } catch (e: any) {
+      // Use setFeedback to show API error
+      setFeedback({
+          isOpen: true,
+          type: 'error',
+          title: `Failed to ${modalMode === 'CREATE' ? 'create' : 'update'} route`,
+          message: e.message || "An unexpected error occurred."
+      });
     } finally {
       setIsSubmitting(false);
     }
+  };
+
+  // --- APACHE EDITOR HANDLERS ---
+  const handleOpenConfigEditor = async (filename: string) => {
+      setEditingConfigName(filename);
+      setEditorOpen(true);
+      setLoadingConfig(true);
+      try {
+          const data = await api.admin.apache.getSite(filename);
+          setEditorContent(data.content);
+      } catch (e) {
+          setEditorContent("# Error loading file content.");
+      } finally {
+          setLoadingConfig(false);
+      }
+  };
+
+  const handleSaveConfig = async () => {
+      setSavingConfig(true);
+      try {
+          await api.admin.apache.updateSite(editingConfigName, editorContent);
+          setEditorOpen(false);
+          loadData(); // Reload to ensure regex parsers catch any port changes
+          
+          setFeedback({
+              isOpen: true,
+              type: 'success',
+              title: 'Config Saved',
+              message: `Configuration for ${editingConfigName} updated successfully.`
+          });
+      } catch (e) {
+          alert("Failed to save configuration.");
+      } finally {
+          setSavingConfig(false);
+      }
   };
 
   // Filter & Sort logic
@@ -121,8 +253,46 @@ export const TunnelManager: React.FC = () => {
       return 0;
     });
 
+  // Calculate delete modal info
+  const deletePort = tunnelToDelete ? getTunnelPort(tunnelToDelete.service) : null;
+  const deleteConfigName = deletePort ? apacheConfigs[deletePort] : null;
+
   return (
-    <div className="space-y-6 animate-in fade-in duration-300">
+    <div className="space-y-6 animate-in fade-in duration-300 relative">
+      
+      {/* FEEDBACK POPUP MODAL */}
+      {feedback.isOpen && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4">
+            <div className="absolute inset-0 bg-slate-900/60 backdrop-blur-sm transition-opacity" onClick={closeFeedback} />
+            <div className="relative w-full max-w-sm bg-white rounded-2xl shadow-2xl overflow-hidden animate-in fade-in zoom-in-95 duration-200">
+                <div className={`h-2 w-full ${feedback.type === 'success' ? 'bg-emerald-500' : 'bg-red-500'}`} />
+                <div className="p-6">
+                    <div className="flex items-start gap-4">
+                        <div className={`p-3 rounded-full shrink-0 ${feedback.type === 'success' ? 'bg-emerald-100 text-emerald-600' : 'bg-red-100 text-red-600'}`}>
+                            {feedback.type === 'success' ? <CheckCircle className="w-8 h-8" /> : <AlertOctagon className="w-8 h-8" />}
+                        </div>
+                        <div>
+                            <h3 className="text-lg font-bold text-slate-900">{feedback.title}</h3>
+                            <p className="text-sm text-slate-500 mt-1 leading-relaxed">{feedback.message}</p>
+                        </div>
+                    </div>
+                    <div className="mt-6 flex justify-end">
+                        <button 
+                            onClick={closeFeedback} 
+                            className={`px-5 py-2 rounded-lg font-bold text-sm text-white shadow-md transition-all hover:scale-105 active:scale-95 ${
+                                feedback.type === 'success' 
+                                ? 'bg-emerald-600 hover:bg-emerald-700 shadow-emerald-200' 
+                                : 'bg-slate-900 hover:bg-slate-800'
+                            }`}
+                        >
+                            {feedback.type === 'success' ? 'OK, Great!' : 'Close'}
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+      )}
+
       <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
         <div>
            <h2 className="text-xl font-bold text-slate-800 flex items-center gap-2">
@@ -172,6 +342,7 @@ export const TunnelManager: React.FC = () => {
                 <table className="min-w-full text-left text-sm">
                     <thead className="bg-slate-50 text-slate-500 border-b border-slate-200">
                     <tr>
+                        <th className="px-6 py-3 font-medium w-16 text-center">#</th>
                         <th 
                             className="px-6 py-3 font-medium cursor-pointer hover:bg-slate-100 transition-colors group select-none"
                             onClick={() => handleSort('hostname')}
@@ -198,12 +369,20 @@ export const TunnelManager: React.FC = () => {
                                 )}
                             </div>
                         </th>
+                        <th className="px-6 py-3 font-medium">Apache Config</th>
                         <th className="px-6 py-3 font-medium text-right">Actions</th>
                     </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100">
-                    {processedTunnels.map((tunnel, idx) => (
+                    {processedTunnels.map((tunnel, idx) => {
+                        const port = getTunnelPort(tunnel.service);
+                        const matchedConfig = port ? apacheConfigs[port] : null;
+
+                        return (
                         <tr key={idx} className="hover:bg-slate-50/50 group">
+                            <td className="px-6 py-4 text-slate-500 font-mono text-xs text-center">
+                                {idx + 1}
+                            </td>
                             <td className="px-6 py-4 font-medium text-slate-800">
                                 <div className="flex items-center gap-2">
                                     <Globe className="w-4 h-4 text-slate-400" />
@@ -216,6 +395,28 @@ export const TunnelManager: React.FC = () => {
                                     {tunnel.service}
                                 </div>
                             </td>
+                            <td className="px-6 py-4">
+                                {matchedConfig ? (
+                                    <div className="inline-flex items-center gap-2 px-2.5 py-1.5 bg-emerald-50 border border-emerald-100 rounded-lg text-emerald-700 text-xs font-medium">
+                                        <Link className="w-3.5 h-3.5" />
+                                        <div className="flex flex-col leading-none">
+                                            <button 
+                                                onClick={() => handleOpenConfigEditor(matchedConfig)}
+                                                className="font-bold hover:underline hover:text-emerald-900 text-left transition-colors"
+                                                title="Edit Config"
+                                            >
+                                                {matchedConfig}
+                                            </button>
+                                            <span className="text-[10px] opacity-80 mt-0.5 font-mono">Port {port}</span>
+                                        </div>
+                                    </div>
+                                ) : (
+                                    <div className="inline-flex items-center gap-1.5 px-2.5 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-slate-400 text-xs font-medium">
+                                        <Unlink className="w-3.5 h-3.5" />
+                                        <span>No Config</span>
+                                    </div>
+                                )}
+                            </td>
                             <td className="px-6 py-4 text-right">
                                 <div className="flex justify-end gap-2 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity">
                                     <button onClick={() => openEditModal(tunnel)} className="p-2 text-indigo-600 hover:bg-indigo-50 rounded-lg transition-colors" title="Edit">
@@ -227,10 +428,10 @@ export const TunnelManager: React.FC = () => {
                                 </div>
                             </td>
                         </tr>
-                    ))}
+                    )})}
                     {processedTunnels.length === 0 && (
                         <tr>
-                            <td colSpan={3} className="px-6 py-12 text-center text-slate-500 italic">
+                            <td colSpan={5} className="px-6 py-12 text-center text-slate-500 italic">
                                 {tunnels.length === 0 ? "No active tunnel routes found." : "No routes match your search."}
                             </td>
                         </tr>
@@ -298,6 +499,52 @@ export const TunnelManager: React.FC = () => {
           </div>
       )}
 
+      {/* APACHE EDITOR MODAL */}
+      {editorOpen && (
+          <div className="fixed inset-0 z-[75] flex items-center justify-center p-4">
+              <div className="absolute inset-0 bg-slate-900/60 backdrop-blur-sm transition-opacity" onClick={() => setEditorOpen(false)} />
+              <div className="relative w-full max-w-5xl bg-white rounded-xl shadow-2xl p-6 animate-in fade-in zoom-in-95 duration-200 flex flex-col h-[85vh]">
+                  <div className="flex justify-between items-center mb-4 shrink-0">
+                      <div>
+                          <h3 className="text-lg font-bold text-slate-900 flex items-center gap-2">
+                              <FileCode className="w-5 h-5 text-indigo-600" />
+                              Edit Config
+                          </h3>
+                          <p className="text-xs text-slate-500 font-mono mt-1">{editingConfigName}</p>
+                      </div>
+                      <button onClick={() => setEditorOpen(false)} className="text-slate-400 hover:text-slate-600"><X className="w-5 h-5" /></button>
+                  </div>
+
+                  <div className="flex-1 min-h-0 bg-slate-900 rounded-lg border border-slate-700 overflow-hidden relative">
+                      {loadingConfig ? (
+                          <div className="absolute inset-0 flex items-center justify-center text-slate-400">
+                              <Loader2 className="w-8 h-8 animate-spin" />
+                          </div>
+                      ) : (
+                          <textarea 
+                              value={editorContent}
+                              onChange={(e) => setEditorContent(e.target.value)}
+                              className="w-full h-full bg-slate-900 text-emerald-400 font-mono text-sm p-4 focus:outline-none resize-none"
+                              spellCheck={false}
+                          />
+                      )}
+                  </div>
+
+                  <div className="pt-4 flex justify-end gap-3 shrink-0">
+                      <button onClick={() => setEditorOpen(false)} className="px-4 py-2 text-slate-600 hover:bg-slate-50 rounded-lg font-medium text-sm transition-colors">Close</button>
+                      <button 
+                          onClick={handleSaveConfig} 
+                          disabled={savingConfig || loadingConfig}
+                          className="px-6 py-2 bg-indigo-600 text-white rounded-lg font-medium text-sm shadow-sm hover:bg-indigo-700 transition-colors flex items-center gap-2 disabled:opacity-50"
+                      >
+                          {savingConfig ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
+                          Save Config
+                      </button>
+                  </div>
+              </div>
+          </div>
+      )}
+
       {/* Delete Confirmation Modal */}
       {tunnelToDelete && (
           <div className="fixed inset-0 z-[80] flex items-center justify-center p-4">
@@ -315,6 +562,15 @@ export const TunnelManager: React.FC = () => {
                           <p className="text-xs text-red-600 mt-2 bg-red-50 p-2 rounded border border-red-100">
                               External traffic to this hostname will no longer be forwarded.
                           </p>
+                          
+                          {deleteConfigName && (
+                              <div className="mt-3 p-2 bg-amber-50 border border-amber-200 rounded-lg text-xs text-amber-800 flex items-start gap-2">
+                                  <Trash2 className="w-3.5 h-3.5 mt-0.5 shrink-0" />
+                                  <span>
+                                      <strong>Auto-Cleanup:</strong> The linked Apache config file <code className="font-bold">{deleteConfigName}</code> will also be deleted.
+                                  </span>
+                              </div>
+                          )}
                       </div>
                   </div>
                   <div className="mt-6 flex justify-end gap-3">

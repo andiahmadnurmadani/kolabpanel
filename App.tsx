@@ -17,9 +17,8 @@ import { FileManager } from './components/user/FileManager';
 import { RestrictedTerminal } from './components/user/RestrictedTerminal';
 import { UserDashboardHome, DatabaseManager, Billing, UserProfile, SupportCenter } from './pages/UserPages';
 import { AdminDashboard, PaymentQueue, UserManagement, DomainManagement, PlanManagement, AdminSupport, TunnelManager, ApacheManager } from './pages/AdminPages';
-import { ArchitectureDoc } from './pages/ArchitectureDoc';
 
-type ViewState = 'DASHBOARD' | 'CREATE_SITE' | 'FILES' | 'DATABASE' | 'BILLING' | 'PROFILE' | 'TERMINAL' | 'SUPPORT' | 'ADMIN_DASHBOARD' | 'ADMIN_USERS' | 'ADMIN_PAYMENTS' | 'ADMIN_DOMAINS' | 'ADMIN_PLANS' | 'ADMIN_SUPPORT' | 'ADMIN_TUNNELS' | 'ADMIN_APACHE' | 'ARCHITECTURE';
+type ViewState = 'DASHBOARD' | 'CREATE_SITE' | 'FILES' | 'DATABASE' | 'BILLING' | 'PROFILE' | 'TERMINAL' | 'SUPPORT' | 'ADMIN_DASHBOARD' | 'ADMIN_USERS' | 'ADMIN_PAYMENTS' | 'ADMIN_DOMAINS' | 'ADMIN_PLANS' | 'ADMIN_SUPPORT' | 'ADMIN_TUNNELS' | 'ADMIN_APACHE' | 'ADMIN_PROFILE';
 
 const App: React.FC = () => {
   const [user, setUser] = useState<User | null>(null);
@@ -183,9 +182,6 @@ const App: React.FC = () => {
               [view]: false
           }));
       }
-      
-      // Re-trigger a check if we are leaving an admin page to verify if others still need attention?
-      // For now, simpler is better. Clicking the item clears the dot.
   };
 
   if (loading) {
@@ -243,11 +239,12 @@ const App: React.FC = () => {
           user={user} 
           currentView={currentView} 
           setSidebarOpen={setSidebarOpen} 
-          onProfileClick={() => user.role === UserRole.USER && handleViewChange('PROFILE')} 
+          onProfileClick={() => handleViewChange(user.role === UserRole.ADMIN ? 'ADMIN_PROFILE' : 'PROFILE')} 
         />
 
         <div className="flex-1 overflow-y-auto p-6 scroll-smooth">
            <div className="max-w-6xl mx-auto">
+             {/* USER VIEWS */}
              {currentView === 'DASHBOARD' && <UserDashboardHome sites={sites} user={user} plans={plans} onRefresh={() => user && refreshSites(user.id)} />}
              {currentView === 'CREATE_SITE' && (
                 <CreateSite 
@@ -275,6 +272,7 @@ const App: React.FC = () => {
              {currentView === 'PROFILE' && <UserProfile user={user} onUpdate={refreshUser} />}
              {currentView === 'SUPPORT' && <SupportCenter user={user} />}
              
+             {/* ADMIN VIEWS */}
              {currentView === 'ADMIN_DASHBOARD' && <AdminDashboard />}
              {currentView === 'ADMIN_USERS' && <UserManagement />}
              {currentView === 'ADMIN_PAYMENTS' && <PaymentQueue />}
@@ -283,7 +281,9 @@ const App: React.FC = () => {
              {currentView === 'ADMIN_PLANS' && <PlanManagement plans={plans} setPlans={setPlans} />}
              {currentView === 'ADMIN_TUNNELS' && <TunnelManager />}
              {currentView === 'ADMIN_APACHE' && <ApacheManager />}
-             {currentView === 'ARCHITECTURE' && <ArchitectureDoc />}
+             
+             {/* SHARED VIEW FOR ADMIN PROFILE */}
+             {currentView === 'ADMIN_PROFILE' && <UserProfile user={user} onUpdate={refreshUser} />}
            </div>
         </div>
       </main>

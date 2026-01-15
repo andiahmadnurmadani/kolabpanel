@@ -1,4 +1,5 @@
 
+
 export enum UserRole {
   USER = 'USER',
   ADMIN = 'ADMIN'
@@ -39,6 +40,7 @@ export interface User {
   email: string;
   role: UserRole;
   plan: string; // Changed from PlanType to string to support dynamic plans
+  planExpiresAt?: string; // ISO Date String
   avatar?: string;
   status: 'ACTIVE' | 'SUSPENDED';
 }
@@ -65,6 +67,16 @@ export interface Payment {
   status: PaymentStatus;
   date: string;
   proofUrl: string;
+}
+
+export interface DiscountCode {
+  id: string;
+  code: string;
+  type: 'PERCENT' | 'FIXED';
+  value: number;
+  status: 'ACTIVE' | 'USED';
+  validPlans: string[]; // List of plan names this coupon is valid for. Empty = All.
+  createdAt: string;
 }
 
 export interface SupportTicket {
@@ -115,6 +127,7 @@ export interface FileNode {
   path: string; // The directory path this file belongs to (e.g., "/" or "/src")
   content?: string; // Mock content for download
   createdAt: string;
+  siteId?: string;
 }
 
 export type SiteFileSystem = Record<string, FileNode[]>;

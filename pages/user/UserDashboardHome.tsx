@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { Card, StatusBadge } from '../../components/Shared';
 import { api } from '../../services/api';
 import { User, HostingPlan, Site, SiteStatus } from '../../types';
-import { Globe, HardDrive, Crown, Zap, Server, Cloud, ExternalLink, Trash2, Edit2, Save, X, AlertTriangle, Database, Loader2, CheckCircle2 } from 'lucide-react';
+import { Globe, HardDrive, Crown, Zap, Server, Cloud, ExternalLink, Trash2, Edit2, Save, X, AlertTriangle, Database, Loader2, CheckCircle2, AlertOctagon, Clock, ArrowRight } from 'lucide-react';
 import { FRAMEWORK_ICONS } from '../../constants';
 
 interface DashboardProps {
@@ -41,6 +41,45 @@ export const UserDashboardHome: React.FC<DashboardProps> = ({ sites = [], user, 
 
   const sitesPercentage = maxSites > 0 ? (usedSites / maxSites) * 100 : 0;
   const storagePercentage = maxStorage > 0 ? (usedStorage / maxStorage) * 100 : 0;
+
+  // --- STORAGE WARNING LOGIC ---
+  const isStorageCritical = storagePercentage > 100;
+  const isStorageWarning = storagePercentage >= 80 && !isStorageCritical;
+
+  const storageConfig = isStorageCritical 
+    ? {
+        gradient: 'from-red-600 to-rose-600',
+        icon: AlertOctagon,
+        textColor: 'text-red-100',
+        titleColor: 'text-red-50',
+        progressColor: 'bg-white',
+        statusText: 'OVER LIMIT',
+        iconBg: 'bg-white/20 border-white/20',
+        pulse: true
+      }
+    : isStorageWarning
+    ? {
+        gradient: 'from-amber-500 to-orange-600',
+        icon: AlertTriangle,
+        textColor: 'text-orange-100',
+        titleColor: 'text-orange-50',
+        progressColor: 'bg-white',
+        statusText: 'NEAR FULL',
+        iconBg: 'bg-black/10 border-black/5',
+        pulse: false
+      }
+    : {
+        gradient: 'from-emerald-600 to-teal-500',
+        icon: Cloud,
+        textColor: 'text-emerald-100',
+        titleColor: 'text-emerald-50',
+        progressColor: 'bg-white',
+        statusText: 'HEALTHY',
+        iconBg: 'bg-white/20 border-white/10',
+        pulse: false
+      };
+
+  const StorageIcon = storageConfig.icon;
 
   // --- EXISTING HANDLERS ---
   const startEdit = (site: Site) => {
@@ -121,6 +160,36 @@ export const UserDashboardHome: React.FC<DashboardProps> = ({ sites = [], user, 
   return (
     <div className="space-y-6 animate-in fade-in duration-300">
       
+      {/* CRITICAL STORAGE ALERT BANNER */}
+      {isStorageCritical && (
+        <div className="bg-red-50 border border-red-200 rounded-xl p-4 shadow-sm animate-in slide-in-from-top-4 flex flex-col md:flex-row items-start gap-4">
+            <div className="p-3 bg-red-100 rounded-full shrink-0 animate-pulse">
+                <Clock className="w-6 h-6 text-red-600" />
+            </div>
+            <div className="flex-1">
+                <h3 className="text-lg font-bold text-red-800 flex items-center gap-2">
+                    Action Required: Storage Limit Exceeded
+                </h3>
+                <p className="text-sm text-red-700 mt-1 leading-relaxed">
+                    You have exceeded your allocated storage limit of <span className="font-bold">{maxStorage} MB</span>. 
+                    Please upgrade your plan or clear unnecessary files immediately.
+                </p>
+                <div className="mt-3 inline-flex items-center gap-2 px-3 py-1.5 bg-red-100 text-red-800 rounded-lg text-xs font-bold border border-red-200">
+                    <AlertOctagon className="w-3.5 h-3.5" />
+                    AUTOMATIC SUSPENSION IN 24 HOURS
+                </div>
+            </div>
+            <div className="flex flex-col gap-2 w-full md:w-auto">
+                <button 
+                    onClick={() => window.location.hash = '#/BILLING'} // Quick hack nav, ideally use a prop function
+                    className="px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg font-bold text-sm shadow-sm transition-colors whitespace-nowrap flex items-center justify-center gap-2"
+                >
+                    Upgrade Plan <ArrowRight className="w-4 h-4" />
+                </button>
+            </div>
+        </div>
+      )}
+
       <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
         {/* Active Sites Card */}
         <div className="bg-gradient-to-br from-blue-600 to-cyan-500 p-6 rounded-xl shadow-lg text-white relative overflow-hidden group">
@@ -147,28 +216,36 @@ export const UserDashboardHome: React.FC<DashboardProps> = ({ sites = [], user, 
             </div>
         </div>
 
-        {/* Storage Used Card */}
-        <div className="bg-gradient-to-br from-emerald-600 to-teal-500 p-6 rounded-xl shadow-lg text-white relative overflow-hidden group">
+        {/* Storage Used Card (Dynamic Styling) */}
+        <div className={`bg-gradient-to-br ${storageConfig.gradient} p-6 rounded-xl shadow-lg text-white relative overflow-hidden group transition-all duration-500`}>
             <div className="absolute -right-6 -bottom-6 text-white/10 rotate-12 transition-transform group-hover:scale-105 duration-500">
                 <HardDrive className="w-32 h-32" />
             </div>
+            {storageConfig.pulse && <div className="absolute inset-0 bg-white/10 animate-pulse pointer-events-none" />}
+            
             <div className="relative z-10 flex items-center justify-between mb-4">
-                <h3 className="text-emerald-100 font-medium text-sm">Storage Usage</h3>
-                <div className="p-2 bg-white/20 rounded-lg backdrop-blur-sm border border-white/10">
-                    <Cloud className="w-5 h-5 text-white" />
+                <h3 className={`${storageConfig.titleColor} font-medium text-sm`}>Storage Usage</h3>
+                <div className={`p-2 rounded-lg backdrop-blur-sm ${storageConfig.iconBg}`}>
+                    <StorageIcon className="w-5 h-5 text-white" />
                 </div>
             </div>
             <div className="relative z-10">
                 <div className="flex items-baseline gap-1">
                    <span className="text-3xl font-bold tracking-tight">{usedStorage.toFixed(0)}</span>
-                   <span className="text-sm font-medium text-emerald-100">MB</span>
-                   <span className="text-lg text-emerald-200 ml-1">/ {maxStorage} MB</span>
+                   <span className={`text-sm font-medium ${storageConfig.textColor}`}>MB</span>
+                   <span className={`text-lg ml-1 opacity-70`}>/ {maxStorage} MB</span>
                 </div>
                 <div className="mt-4 space-y-2">
                     <div className="w-full bg-black/20 h-2 rounded-full overflow-hidden backdrop-blur-sm">
-                        <div style={{ width: `${Math.min(storagePercentage, 100)}%` }} className={`h-full rounded-full transition-all duration-1000 ease-out ${storagePercentage > 90 ? 'bg-red-400' : 'bg-white'}`} />
+                        <div 
+                            style={{ width: `${Math.min(storagePercentage, 100)}%` }} 
+                            className={`h-full rounded-full transition-all duration-1000 ease-out ${storageConfig.progressColor}`} 
+                        />
                     </div>
-                    <p className="text-xs text-emerald-100 font-medium">{storagePercentage.toFixed(1)}% usage</p>
+                    <div className="flex justify-between items-center">
+                        <p className={`text-xs font-medium ${storageConfig.textColor}`}>{storagePercentage.toFixed(1)}% used</p>
+                        <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded bg-black/20 ${storageConfig.textColor}`}>{storageConfig.statusText}</span>
+                    </div>
                 </div>
             </div>
         </div>

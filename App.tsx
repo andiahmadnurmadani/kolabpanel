@@ -15,10 +15,10 @@ import { Header } from './components/layout/Header';
 import { CreateSite } from './components/user/CreateSite';
 import { FileManager } from './components/user/FileManager';
 import { RestrictedTerminal } from './components/user/RestrictedTerminal';
-import { UserDashboardHome, DatabaseManager, Billing, UserProfile, SupportCenter } from './pages/UserPages';
+import { UserDashboardHome, DatabaseManager, Billing, UserProfile, SupportCenter, HostingGuide } from './pages/UserPages';
 import { AdminDashboard, PaymentQueue, UserManagement, DomainManagement, PlanManagement, AdminSupport, TunnelManager, ApacheManager } from './pages/AdminPages';
 
-type ViewState = 'DASHBOARD' | 'CREATE_SITE' | 'FILES' | 'DATABASE' | 'BILLING' | 'PROFILE' | 'TERMINAL' | 'SUPPORT' | 'ADMIN_DASHBOARD' | 'ADMIN_USERS' | 'ADMIN_PAYMENTS' | 'ADMIN_DOMAINS' | 'ADMIN_PLANS' | 'ADMIN_SUPPORT' | 'ADMIN_TUNNELS' | 'ADMIN_APACHE' | 'ADMIN_PROFILE';
+type ViewState = 'DASHBOARD' | 'CREATE_SITE' | 'FILES' | 'DATABASE' | 'BILLING' | 'PROFILE' | 'TERMINAL' | 'SUPPORT' | 'USER_GUIDE' | 'ADMIN_DASHBOARD' | 'ADMIN_USERS' | 'ADMIN_PAYMENTS' | 'ADMIN_DOMAINS' | 'ADMIN_PLANS' | 'ADMIN_SUPPORT' | 'ADMIN_TUNNELS' | 'ADMIN_APACHE' | 'ADMIN_PROFILE';
 
 const App: React.FC = () => {
   const [user, setUser] = useState<User | null>(null);
@@ -271,6 +271,7 @@ const App: React.FC = () => {
              {currentView === 'BILLING' && <Billing plans={plans} userPlanName={user.plan} user={user} />}
              {currentView === 'PROFILE' && <UserProfile user={user} onUpdate={refreshUser} />}
              {currentView === 'SUPPORT' && <SupportCenter user={user} />}
+             {currentView === 'USER_GUIDE' && <HostingGuide onNavigate={handleViewChange} />}
              
              {/* ADMIN VIEWS */}
              {currentView === 'ADMIN_DASHBOARD' && <AdminDashboard />}

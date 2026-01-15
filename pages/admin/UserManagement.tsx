@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { Card, StatusBadge } from '../../components/Shared';
 import { api } from '../../services/api';
 import { User, UserRole, Site, HostingPlan } from '../../types';
-import { Search, Eye, Ban, Shield, X, Activity, AlertTriangle, Power, Clock, Calendar, Plus, Save, Loader2, Trash2 } from 'lucide-react';
+import { Search, Eye, Ban, Shield, X, Activity, AlertTriangle, Power, Clock, Calendar, Plus, Save, Loader2, Trash2, HardDrive, Database } from 'lucide-react';
 import { FRAMEWORK_ICONS } from '../../constants';
 
 export const UserManagement: React.FC = () => {
@@ -297,15 +297,15 @@ export const UserManagement: React.FC = () => {
       {selectedUser && (
         <div className="fixed inset-0 z-[60] flex items-center justify-center p-4">
           <div className="absolute inset-0 bg-slate-900/50 backdrop-blur-sm" onClick={() => setSelectedUserId(null)}></div>
-          <div className="relative bg-white rounded-2xl shadow-2xl max-w-2xl w-full overflow-hidden animate-in fade-in zoom-in-95 duration-200">
-            <div className="flex items-center justify-between p-6 border-b border-slate-100">
+          <div className="relative bg-white rounded-2xl shadow-2xl max-w-2xl w-full overflow-hidden animate-in fade-in zoom-in-95 duration-200 flex flex-col max-h-[90vh]">
+            <div className="flex items-center justify-between p-6 border-b border-slate-100 shrink-0">
               <h3 className="text-lg font-bold text-slate-800">User Details</h3>
               <button onClick={() => setSelectedUserId(null)} className="p-2 hover:bg-slate-100 rounded-full text-slate-500">
                 <X className="w-5 h-5" />
               </button>
             </div>
             
-            <div className="p-6 space-y-6">
+            <div className="p-6 space-y-6 overflow-y-auto">
               <div className="flex items-center gap-4">
                  <img src={selectedUser.avatar} className="w-16 h-16 rounded-full border-2 border-slate-100" />
                  <div>
@@ -362,6 +362,57 @@ export const UserManagement: React.FC = () => {
                   )}
               </div>
 
+              {/* STORAGE USAGE SECTION */}
+              {(() => {
+                  const userPlan = plans.find(p => p.name === selectedUser.plan);
+                  const storageLimit = userPlan?.limits?.storage || 0;
+                  const totalUsed = selectedUserSites.reduce((acc, s) => acc + (s.storageUsed || 0), 0);
+                  const percent = storageLimit > 0 ? (totalUsed / storageLimit) * 100 : 0;
+                  
+                  let barColor = 'bg-emerald-500';
+                  let statusText = 'Healthy';
+                  let statusColor = 'text-emerald-700 bg-emerald-100 border-emerald-200';
+
+                  if (percent >= 100) {
+                      barColor = 'bg-red-500';
+                      statusText = 'Limit Exceeded';
+                      statusColor = 'text-red-700 bg-red-100 border-red-200';
+                  } else if (percent > 80) {
+                      barColor = 'bg-amber-500';
+                      statusText = 'Near Limit';
+                      statusColor = 'text-amber-700 bg-amber-100 border-amber-200';
+                  }
+
+                  return (
+                      <div className="bg-slate-50 rounded-xl p-4 border border-slate-200">
+                          <h4 className="text-sm font-bold text-slate-900 uppercase tracking-wider mb-3 flex items-center gap-2">
+                              <HardDrive className="w-4 h-4" /> Storage Usage
+                          </h4>
+                          <div className="space-y-3">
+                              <div className="flex justify-between items-center text-xs">
+                                  <div className={`px-2 py-0.5 rounded border font-bold ${statusColor}`}>
+                                      {statusText}
+                                  </div>
+                                  <span className="font-semibold text-slate-600">
+                                      {totalUsed.toFixed(1)} MB <span className="text-slate-400 font-normal">/ {storageLimit} MB</span>
+                                  </span>
+                              </div>
+                              <div className="h-2.5 w-full bg-slate-200 rounded-full overflow-hidden">
+                                  <div 
+                                      className={`h-full rounded-full transition-all duration-500 ${barColor} ${percent > 100 ? 'animate-pulse' : ''}`}
+                                      style={{ width: `${Math.min(percent, 100)}%` }}
+                                  ></div>
+                              </div>
+                              {percent > 100 && (
+                                  <div className="text-[10px] text-red-600 flex items-center gap-1 font-medium">
+                                      <AlertTriangle className="w-3 h-3" /> User has exceeded their storage plan.
+                                  </div>
+                              )}
+                          </div>
+                      </div>
+                  );
+              })()}
+
               <div>
                 <h4 className="text-sm font-bold text-slate-900 uppercase tracking-wider mb-4 flex items-center gap-2">
                   <Activity className="w-4 h-4" /> Owned Sites
@@ -379,7 +430,12 @@ export const UserManagement: React.FC = () => {
                              <div className="text-[10px] text-slate-500">{site.subdomain}.kolabpanel.com</div>
                            </div>
                         </div>
-                        <StatusBadge status={site.status} />
+                        <div className="flex items-center gap-3">
+                            <span className="text-xs text-slate-500 bg-slate-50 px-1.5 py-0.5 rounded border border-slate-100 flex items-center gap-1">
+                                <Database className="w-3 h-3" /> {(site.storageUsed || 0).toFixed(1)} MB
+                            </span>
+                            <StatusBadge status={site.status} />
+                        </div>
                       </div>
                     ))}
                   </div>

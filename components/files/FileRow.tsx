@@ -1,5 +1,5 @@
 import React from 'react';
-import { Folder, File as FileIcon, Download, Edit2, Trash2, Check, X } from 'lucide-react';
+import { Folder, File as FileIcon, Download, Edit2, Trash2, Check, X, FileCode } from 'lucide-react';
 import { FileNode } from '../../types';
 
 interface FileRowProps {
@@ -9,6 +9,7 @@ interface FileRowProps {
     onRenameClick: (e: React.MouseEvent, node: FileNode) => void;
     onDeleteClick: (e: React.MouseEvent, node: FileNode) => void;
     onDownloadClick: (e: React.MouseEvent, node: FileNode) => void;
+    onEditContentClick?: (e: React.MouseEvent, node: FileNode) => void;
     onNavigate: (folderName: string) => void;
     setRenameValue: (val: string) => void;
     submitRename: () => void;
@@ -16,7 +17,7 @@ interface FileRowProps {
 }
 
 export const FileRow: React.FC<FileRowProps> = ({ 
-    file, renamingId, renameValue, onRenameClick, onDeleteClick, onDownloadClick, onNavigate, setRenameValue, submitRename, cancelRename 
+    file, renamingId, renameValue, onRenameClick, onDeleteClick, onDownloadClick, onEditContentClick, onNavigate, setRenameValue, submitRename, cancelRename 
 }) => {
     return (
         <div 
@@ -52,6 +53,9 @@ export const FileRow: React.FC<FileRowProps> = ({
             <div className="col-span-3 flex justify-end gap-2">
                 {!renamingId && (
                     <div className="opacity-0 group-hover:opacity-100 transition-all transform translate-x-2 group-hover:translate-x-0 flex gap-2">
+                        {file.type === 'file' && onEditContentClick && (
+                            <button onClick={(e) => onEditContentClick(e, file)} className="p-1.5 hover:bg-slate-100 text-slate-500 hover:text-indigo-600 rounded transition-colors" title="Edit Content"><FileCode className="w-3.5 h-3.5" /></button>
+                        )}
                         {file.type === 'file' && (
                             <button onClick={(e) => onDownloadClick(e, file)} className="p-1.5 hover:bg-slate-100 text-slate-500 hover:text-indigo-600 rounded transition-colors" title="Download"><Download className="w-3.5 h-3.5" /></button>
                         )}

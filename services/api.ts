@@ -200,6 +200,29 @@ export const api = {
               setStorage(DB_KEYS.FILES, allFiles);
           }
           return delay({ success: true });
+      },
+      getContent: async (siteId: string, path: string, name: string): Promise<string> => {
+          // Simulation: Return mock content based on extension
+          let content = "";
+          if (name.endsWith('.env')) {
+              content = `APP_NAME=KolabApp\nAPP_ENV=production\nAPP_KEY=base64:randomkey123\n\nDB_CONNECTION=mysql\nDB_HOST=127.0.0.1\nDB_PORT=3306\nDB_DATABASE=db_user1\nDB_USERNAME=sql_user1\nDB_PASSWORD=secret`;
+          } else if (name.endsWith('.json')) {
+              content = `{\n  "name": "my-project",\n  "version": "1.0.0",\n  "private": true,\n  "scripts": {\n    "start": "node index.js"\n  }\n}`;
+          } else if (name.endsWith('.js') || name.endsWith('.ts') || name.endsWith('.tsx')) {
+              content = `import React from 'react';\n\nexport const App = () => {\n  return <h1>Hello World</h1>;\n};`;
+          } else if (name.endsWith('.html')) {
+              content = `<!DOCTYPE html>\n<html>\n<head>\n  <title>My Site</title>\n</head>\n<body>\n  <h1>Welcome</h1>\n</body>\n</html>`;
+          } else if (name.endsWith('.css')) {
+              content = `body {\n  background-color: #f0f0f0;\n  font-family: sans-serif;\n}`;
+          } else {
+              content = "File content is not available in preview mode.";
+          }
+          return delay(content);
+      },
+      saveContent: async (siteId: string, path: string, name: string, content: string): Promise<boolean> => {
+          // In a real app, this would write to the filesystem
+          // Here we just simulate a success delay
+          return delay(true);
       }
   },
 

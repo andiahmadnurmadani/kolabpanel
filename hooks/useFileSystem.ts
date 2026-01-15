@@ -40,6 +40,14 @@ export const useFileSystem = (sites: Site[]) => {
       fetchFiles(siteId, path);
   };
 
+  const getFileContent = async (siteId: string, path: string, name: string) => {
+      return await api.files.getContent(siteId, path, name);
+  };
+
+  const saveFileContent = async (siteId: string, path: string, name: string, content: string) => {
+      return await api.files.saveContent(siteId, path, name, content);
+  };
+
   return {
     currentFiles,
     loadingFiles: loading,
@@ -47,6 +55,8 @@ export const useFileSystem = (sites: Site[]) => {
     uploadFile,
     renameFile,
     deleteFile,
-    createFolder
+    createFolder,
+    getFileContent,
+    saveFileContent
   };
 };

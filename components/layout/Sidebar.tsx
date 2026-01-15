@@ -1,6 +1,6 @@
 import React from 'react';
 import { UserRole, User } from '../../types';
-import { LayoutDashboard, Server, FolderOpen, Database, CreditCard, LogOut, FileText, Activity, Users, User as UserIcon, Globe, ShoppingBag, Terminal, ShieldCheck, X, MessageSquare, Network, Settings } from 'lucide-react';
+import { LayoutDashboard, Server, FolderOpen, Database, CreditCard, LogOut, FileText, Activity, Users, User as UserIcon, Globe, ShoppingBag, Terminal, ShieldCheck, X, MessageSquare, Network, Settings, BookOpen } from 'lucide-react';
 
 interface SidebarProps {
   user: User;
@@ -66,6 +66,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ user, isOpen, setIsOpen, curre
             
             <div className="text-xs font-bold text-slate-500 uppercase tracking-wider px-4 mb-2 mt-8">Account</div>
             <NavItem view="BILLING" icon={CreditCard} label="Billing & Plans" />
+            <NavItem view="USER_GUIDE" icon={BookOpen} label="Hosting Guide" />
             <NavItem view="SUPPORT" icon={MessageSquare} label="Support Center" />
             <NavItem view="PROFILE" icon={UserIcon} label="My Profile" />
           </>

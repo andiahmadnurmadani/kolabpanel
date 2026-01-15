@@ -1,4 +1,4 @@
-﻿const express = require('express');
+const express = require('express');
 const cors = require('cors');
 const jwt = require('jsonwebtoken');
 const multer = require('multer');
@@ -53,6 +53,11 @@ const PAYMENT_PROOF_PATH = process.env.PAYMENT_PROOF_PATH
     ? resolveEnvPath(process.env.PAYMENT_PROOF_PATH)
     : path.resolve(__dirname, '..', 'user_billing');
 
+// --- CUSTOMIZABLE AVATAR PATH ---
+const AVATAR_ROOT = process.env.AVATAR_ROOT 
+    ? resolveEnvPath(process.env.AVATAR_ROOT)
+    : path.join(STORAGE_ROOT, 'avatars');
+
 const ensureWritableDirSync = (dirPath, isRemote = false) => {
     fs.mkdirSync(dirPath, { recursive: true });
     
@@ -72,15 +77,14 @@ const isUNCPath = (p) => p.startsWith('\\\\');
 try {
     ensureWritableDirSync(STORAGE_ROOT, isUNCPath(STORAGE_ROOT));
     ensureWritableDirSync(PAYMENT_PROOF_PATH);
+    ensureWritableDirSync(AVATAR_ROOT);
 } catch (e) {
     console.error('[storage] Storage path is not writable:', e.message);
-    console.error('[storage] STORAGE_ROOT=', process.env.STORAGE_ROOT);
-    console.error('[storage] PAYMENT_PROOF_PATH=', process.env.PAYMENT_PROOF_PATH);
     process.exit(1);
 }
 
 console.log('[storage] STORAGE_ROOT resolved =', STORAGE_ROOT);
-console.log('[storage] PAYMENT_PROOF_PATH resolved =', PAYMENT_PROOF_PATH);
+console.log('[storage] AVATAR_ROOT resolved =', AVATAR_ROOT);
 
 const DEPLOY_RETRY_COUNT = 5;
 const DEPLOY_RETRY_BASE_DELAY_MS = 300;
@@ -99,16 +103,8 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 const isTransientFsError = (err) => {
     const code = err && err.code;
-    // Network shares / Windows can surface transient issues as these codes
     return [
-        'EPERM',
-        'EACCES',
-        'EBUSY',
-        'ETIMEDOUT',
-        'EIO',
-        'ENETUNREACH',
-        'ECONNRESET',
-        'ENOTEMPTY'
+        'EPERM', 'EACCES', 'EBUSY', 'ETIMEDOUT', 'EIO', 'ENETUNREACH', 'ECONNRESET', 'ENOTEMPTY'
     ].includes(code);
 };
 
@@ -138,13 +134,9 @@ const newJobId = () => `deploy_${Date.now()}_${Math.random().toString(16).slice(
 
 const setJob = (jobId, patch) => {
     const prev = deployJobs.get(jobId) || {};
-    
-    // Defense: Only allow status='completed' when progress=100
     if (patch.status === 'completed' && patch.progress !== 100) {
-        console.warn(`[setJob] Prevented premature completion for job ${jobId}: progress=${patch.progress}`);
-        delete patch.status; // Remove status from update
+        delete patch.status;
     }
-    
     deployJobs.set(jobId, { ...prev, ...patch, updatedAt: new Date().toISOString() });
 };
 
@@ -182,27 +174,26 @@ const initDB = async () => {
   try {
     const schemaPath = path.join(__dirname, 'schema.sql');
     const schemaSql = fs.readFileSync(schemaPath, 'utf8');
-    
-    // Split queries strictly if needed, but multipleStatements: true handles most cases.
-    // However, executing a large block is safer with pool.query vs pool.execute for multiple statements
     const connection = await db.getConnection();
     try {
         await connection.query(schemaSql);
-        console.log('Database initialized successfully (tables checked/created).');
+        console.log('Database initialized successfully.');
     } finally {
         connection.release();
     }
   } catch (err) {
     console.error('Database initialization failed:', err.message);
-    // Don't exit process, maybe DB isn't ready yet, but log error
   }
 };
 
 // Middleware
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: '10mb' })); // Increase limit for base64 images
 
-// Multer Config - Memory storage (upload langsung ke UNC path nanti di endpoint)
+// Serve Avatars Statically
+app.use('/avatars', express.static(AVATAR_ROOT));
+
+// Multer Config
 const upload = multer({ 
   storage: multer.memoryStorage(),
   limits: { fileSize: 100 * 1024 * 1024 } // 100MB limit
@@ -218,28 +209,9 @@ const getSafePath = async (userId, siteName, relativePath) => {
     const siteDir = path.join(userDir, siteName);
     const safePath = path.resolve(siteDir, (relativePath || '/').replace(/^\/+/g, '')); 
 
-    // Ensure the resolved path is still inside the site directory
-    // Note: If relativePath is '/', safePath equals siteDir
     if (!safePath.startsWith(siteDir)) return null;
     
     return { fullPath: safePath, siteDir, userDir };
-};
-
-const getSiteSize = (dirPath) => {
-    let size = 0;
-    if (!fs.existsSync(dirPath)) return 0;
-    
-    const files = fs.readdirSync(dirPath);
-    for (const file of files) {
-        const filePath = path.join(dirPath, file);
-        const stats = fs.statSync(filePath);
-        if (stats.isDirectory()) {
-            size += getSiteSize(filePath);
-        } else {
-            size += stats.size;
-        }
-    }
-    return size;
 };
 
 // --- ROUTES ---
@@ -247,23 +219,18 @@ const getSiteSize = (dirPath) => {
 // 1. Auth
 app.post('/api/auth/login', async (req, res) => {
     const { username, password } = req.body;
-    console.log('[login] Attempt:', username);
     try {
         const [users] = await db.execute('SELECT * FROM users WHERE username = ?', [username]);
-        console.log('[login] Users found:', users.length);
         const user = users[0];
         
         if (user && user.password === password) {
-            console.log('[login] Success:', username);
             const token = jwt.sign({ id: user.id, role: user.role }, SECRET_KEY, { expiresIn: '12h' });
             const { password, ...u } = user;
             res.json({ token, user: u });
         } else {
-            console.log('[login] Failed: Invalid credentials for', username);
             res.status(401).json({ message: 'Invalid credentials' });
         }
     } catch (err) {
-        console.error('[login] Error:', err);
         res.status(500).json({ message: err.message });
     }
 });
@@ -288,25 +255,34 @@ app.get('/api/auth/me', async (req, res) => {
     }
 });
 
-app.post('/api/auth/change-password', async (req, res) => {
-    const { userId, current, newPass } = req.body;
-    try {
-        const [users] = await db.execute('SELECT password FROM users WHERE id = ?', [userId]);
-        if (users.length === 0) return res.status(404).json({ message: 'User not found' });
-        
-        if (users[0].password === current) {
-            await db.execute('UPDATE users SET password = ? WHERE id = ?', [newPass, userId]);
-            res.json({ success: true });
-        } else {
-            res.status(400).json({ message: 'Incorrect current password' });
-        }
-    } catch (err) {
-        res.status(500).json({ message: err.message });
-    }
-});
-
 app.put('/api/auth/profile', async (req, res) => {
     const { id, ...data } = req.body;
+    
+    // Handle Base64 Image Upload if present in 'avatar' field
+    if (data.avatar && data.avatar.startsWith('data:image')) {
+        try {
+            const matches = data.avatar.match(/^data:([A-Za-z-+\/]+);base64,(.+)$/);
+            if (matches && matches.length === 3) {
+                const buffer = Buffer.from(matches[2], 'base64');
+                const filename = `avatar_${id}_${Date.now()}.png`;
+                const filePath = path.join(AVATAR_ROOT, filename);
+                
+                // Save file to custom path
+                fs.writeFileSync(filePath, buffer);
+                
+                // Update avatar field with public URL
+                // Assuming the server is reachable at the same host/port for static files
+                // Using relative path for frontend to resolve or full URL if domain known
+                const protocol = req.protocol;
+                const host = req.get('host');
+                data.avatar = `${protocol}://${host}/avatars/${filename}`;
+            }
+        } catch (err) {
+            console.error("Failed to save avatar:", err);
+            // Don't fail the whole request, just keep old avatar or base64 (might be too large for DB though)
+        }
+    }
+
     // Construct query dynamically
     const keys = Object.keys(data);
     const values = Object.values(data);
@@ -324,28 +300,35 @@ app.put('/api/auth/profile', async (req, res) => {
     }
 });
 
+app.post('/api/auth/change-password', async (req, res) => {
+    const { userId, current, newPass } = req.body;
+    try {
+        const [users] = await db.execute('SELECT password FROM users WHERE id = ?', [userId]);
+        if (users.length === 0) return res.status(404).json({ message: 'User not found' });
+        
+        if (users[0].password === current) {
+            await db.execute('UPDATE users SET password = ? WHERE id = ?', [newPass, userId]);
+            res.json({ success: true });
+        } else {
+            res.status(400).json({ message: 'Incorrect current password' });
+        }
+    } catch (err) {
+        res.status(500).json({ message: err.message });
+    }
+});
+
 // 2. Sites
 app.get('/api/sites', async (req, res) => {
     const { userId } = req.query;
     if (!userId) return res.status(400).json({ message: 'userId is required' });
-
     try {
         const [sites] = await db.execute('SELECT * FROM sites WHERE user_id = ? ORDER BY created_at DESC', [userId]);
         const mapped = sites.map((s) => ({
-            id: s.id,
-            userId: s.user_id,
-            name: s.name,
-            subdomain: s.subdomain,
-            framework: s.framework,
-            status: s.status,
-            createdAt: s.created_at,
-            storageUsed: s.storage_used,
-            hasDatabase: !!s.has_database,
+            id: s.id, userId: s.user_id, name: s.name, subdomain: s.subdomain, framework: s.framework,
+            status: s.status, createdAt: s.created_at, storageUsed: s.storage_used, hasDatabase: !!s.has_database,
         }));
         res.json(mapped);
-    } catch (err) {
-        res.status(500).json({ message: err.message });
-    }
+    } catch (err) { res.status(500).json({ message: err.message }); }
 });
 
 app.post('/api/sites/deploy', upload.single('file'), async (req, res) => {
@@ -1212,57 +1195,68 @@ app.post('/api/sites/:id/execute-stream', async (req, res) => {
         password: process.env.SSH_PASSWORD
       };
 
-      if (process.env.SSH_PRIVATE_KEY_PATH) {
-        sshConfig.privateKey = require('fs').readFileSync(process.env.SSH_PRIVATE_KEY_PATH);
-        delete sshConfig.password;
-      }
-
-      // Whitelist check
+      // Define allowed commands for Laravel
       const allowedCommands = [
-        '/usr/local/bin/php82 /usr/local/bin/composer install',
-        '/usr/local/bin/php82 /usr/local/bin/composer update',
-        'export PATH=/usr/local/bin:$PATH && npm install',
-        'export PATH=/usr/local/bin:$PATH && npm run build',
-        'export PATH=/usr/local/bin:$PATH && npm run dev',
+        'php artisan',
+        '/usr/local/bin/php82 artisan',
+        'composer',
+        'npm',
         '/usr/local/bin/php82 artisan migrate',
         '/usr/local/bin/php82 artisan db:seed',
-        '/usr/local/bin/php82 artisan storage:link',
         '/usr/local/bin/php82 artisan cache:clear',
-        '/usr/local/bin/php82 artisan config:cache',
+        '/usr/local/bin/php82 artisan config:clear',
         '/usr/local/bin/php82 artisan route:cache',
         '/usr/local/bin/php82 artisan view:clear',
         '/usr/local/bin/php82 artisan optimize'
       ];
 
-      const isAllowed = allowedCommands.some(allowed => 
-        command.trim().startsWith(allowed) || command.includes(allowed)
-      );
+      // Detect if command should run locally (migration/seeding commands)
+      const isMigrationCommand = command.includes('artisan migrate') || command.includes('artisan db:seed');
+      
+      if (isMigrationCommand) {
+        // Execute locally on Windows (to access Laragon MySQL)
+        const windowsProjectPath = `\\\\${sshConfig.host}\\web\\project\\kohost_users\\${username}\\${projectName}`;
+        
+        try {
+          await executeLocalCommandStreaming(windowsProjectPath, command, sendEvent);
+          sendEvent('done', { success: true });
+          res.end();
+        } catch (err) {
+          sendEvent('error', { message: err.message });
+          res.end();
+        }
+      } else if (process.env.SSH_PRIVATE_KEY_PATH) {
+        // Execute via SSH for non-migration commands
+        const isAllowed = allowedCommands.some(allowed => 
+          command.trim().startsWith(allowed) || command.includes(allowed)
+        );
 
-      if (!isAllowed) {
-        sendEvent('error', { message: 'Command not allowed' });
-        return res.end();
+        if (!isAllowed) {
+          sendEvent('error', { message: 'Command not allowed' });
+          return res.end();
+        }
+
+        const workingDir = `/var/services/web/project/kohost_users/${username}/${projectName}`;
+        let processedCommand = command.replace('$USERNAME', username);
+        
+        const isAbsoluteCommand = processedCommand.includes('/var/') || processedCommand.includes('/volume');
+        const isPwdCommand = processedCommand.trim() === 'pwd';
+        
+        let fullCommand;
+        if (isAbsoluteCommand) {
+          fullCommand = processedCommand;
+        } else if (isPwdCommand) {
+          fullCommand = `cd ${workingDir} 2>/dev/null && pwd || echo "Directory not found: ${workingDir}"`;
+        } else {
+          fullCommand = `cd ${workingDir} 2>/dev/null && ${processedCommand} || echo "Directory not found: ${workingDir}"`;
+        }
+
+        // Execute dengan streaming
+        await executeSSHCommandStreaming(sshConfig, fullCommand, sendEvent);
+        
+        sendEvent('done', { success: true });
+        res.end();
       }
-
-      const workingDir = `/var/services/web/project/kohost_users/${username}/${projectName}`;
-      let processedCommand = command.replace('$USERNAME', username);
-      
-      const isAbsoluteCommand = processedCommand.includes('/var/') || processedCommand.includes('/volume');
-      const isPwdCommand = processedCommand.trim() === 'pwd';
-      
-      let fullCommand;
-      if (isAbsoluteCommand) {
-        fullCommand = processedCommand;
-      } else if (isPwdCommand) {
-        fullCommand = `cd ${workingDir} 2>/dev/null && pwd || echo "Directory not found: ${workingDir}"`;
-      } else {
-        fullCommand = `cd ${workingDir} 2>/dev/null && ${processedCommand} || echo "Directory not found: ${workingDir}"`;
-      }
-
-      // Execute dengan streaming
-      await executeSSHCommandStreaming(sshConfig, fullCommand, sendEvent);
-      
-      sendEvent('done', { success: true });
-      res.end();
     } else {
       sendEvent('error', { message: `Command execution not yet supported for ${framework}` });
       res.end();
@@ -1275,6 +1269,153 @@ app.post('/api/sites/:id/execute-stream', async (req, res) => {
     res.end();
   }
 });
+
+// Helper function untuk execute command locally (Windows) - copy to local drive first
+async function executeLocalCommandStreaming(projectPath, command, sendEvent) {
+  return new Promise((resolve, reject) => {
+    const { exec, execSync } = require('child_process');
+    const os = require('os');
+    const isWindows = os.platform() === 'win32';
+    
+    if (!isWindows) {
+      const unixProjectPath = projectPath.replace(/\\/g, '/');
+      const bashCommand = `cd "${unixProjectPath}" && php ${command}`;
+      exec(bashCommand, (error, stdout, stderr) => {
+        if (stdout) sendEvent('log', { type: 'stdout', text: stdout });
+        if (stderr) sendEvent('log', { type: 'stderr', text: stderr });
+        sendEvent('exit', { code: error ? 1 : 0 });
+        if (error) reject(error);
+        else resolve({ exitCode: 0 });
+      });
+      return;
+    }
+    
+    // Windows: Find PHP
+    let phpPath = process.env.PHP_PATH;
+    if (!phpPath) {
+      const locations = [
+        'D:\\laragon\\bin\\php\\php-8.3.26-Win32-vs16-x64\\php.exe',
+        'C:\\laragon\\bin\\php\\php-8.3.0\\php.exe',
+        'C:\\laragon\\bin\\php\\php-8.2.0\\php.exe',
+      ];
+      for (const loc of locations) {
+        if (fs.existsSync(loc)) { phpPath = loc; break; }
+      }
+      if (!phpPath) {
+        try {
+          phpPath = execSync('where php', { encoding: 'utf8', windowsHide: true }).split('\n')[0].trim();
+        } catch (e) {
+          sendEvent('log', { type: 'stderr', text: 'PHP not found.' });
+          return reject(new Error('PHP not found'));
+        }
+      }
+    }
+    
+    // Clean command
+    let cleanCommand = command.replace(/^php\s+/, '');
+    if (!cleanCommand.includes('--no-interaction')) {
+      cleanCommand = cleanCommand.includes('--force') 
+        ? cleanCommand.replace('--force', '--force --no-interaction')
+        : cleanCommand + ' --no-interaction';
+    }
+    
+    // Convert UNC to mapped drive for source
+    let sourcePath = projectPath;
+    if (projectPath.startsWith('\\\\')) {
+      sourcePath = projectPath.replace(/^\\\\[^\\]+\\web/, 'X:').replace(/\//g, '\\');
+    }
+    
+    // Create temp folder on local drive
+    const tempDir = path.join('D:\\temp_migrate', `m_${Date.now()}`);
+    const batFile = path.join(os.tmpdir(), `migrate_${Date.now()}.bat`);
+    
+    // Create batch file that: copies, runs migration, cleans up
+    const batContent = `@echo off
+chcp 65001 > nul
+robocopy "${sourcePath}" "${tempDir}" /E /NFL /NDL /NJH /NJS /NC /NS /NP /MT:8 /XD node_modules node_modules_old .git storage\\logs /XF *.log > nul
+if not exist "${tempDir}\\artisan" (
+    echo [ERROR] Failed to copy project files
+    exit /b 1
+)
+cd /d "${tempDir}"
+"${phpPath}" ${cleanCommand}
+set exitcode=%errorlevel%
+cd /d D:\\
+rmdir /s /q "${tempDir}" > nul 2>&1
+exit /b %exitcode%
+`;
+    
+    // Ensure temp base dir exists
+    try {
+      if (!fs.existsSync('D:\\temp_migrate')) {
+        fs.mkdirSync('D:\\temp_migrate', { recursive: true });
+      }
+    } catch (e) {}
+    
+    fs.writeFileSync(batFile, batContent, 'utf8');
+    console.log('[local-exec] Batch file:', batFile);
+    console.log('[local-exec] Source:', sourcePath);
+    console.log('[local-exec] Temp dir:', tempDir);
+    
+    sendEvent('log', { type: 'info', text: 'Running migration...' });
+    
+    // Execute with spawn for real-time streaming
+    const { spawn } = require('child_process');
+    const child = spawn('cmd.exe', ['/c', batFile], {
+      windowsHide: true,
+      stdio: ['ignore', 'pipe', 'pipe']
+    });
+    
+    let outputBuffer = '';
+    
+    child.stdout.on('data', (data) => {
+      outputBuffer += data.toString();
+      const lines = outputBuffer.split(/\r?\n/);
+      outputBuffer = lines.pop() || '';
+      
+      lines.forEach(line => {
+        if (line.trim()) {
+          console.log('[local-exec] stdout:', line);
+          sendEvent('log', { type: 'stdout', text: line });
+        }
+      });
+    });
+    
+    child.stderr.on('data', (data) => {
+      data.toString().split(/\r?\n/).forEach(line => {
+        if (line.trim()) {
+          console.log('[local-exec] stderr:', line);
+          sendEvent('log', { type: 'stderr', text: line });
+        }
+      });
+    });
+    
+    child.on('close', (code) => {
+      // Flush remaining buffer
+      if (outputBuffer.trim()) {
+        sendEvent('log', { type: 'stdout', text: outputBuffer });
+      }
+      
+      // Cleanup batch file
+      try { fs.unlinkSync(batFile); } catch (e) {}
+      
+      console.log('[local-exec] Exit code:', code);
+      sendEvent('exit', { code: code || 0 });
+      
+      if (code !== 0) {
+        reject(new Error(`Command failed with exit code ${code}`));
+      } else {
+        resolve({ exitCode: code || 0 });
+      }
+    });
+    
+    child.on('error', (err) => {
+      console.error('[local-exec] Error:', err);
+      sendEvent('log', { type: 'stderr', text: err.message });
+      reject(err);
+    });
+  });
+}
 
 // Helper function untuk execute SSH command dengan streaming output
 async function executeSSHCommandStreaming(sshConfig, command, sendEvent) {

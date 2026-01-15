@@ -111,7 +111,7 @@ export const RestrictedTerminal: React.FC<RestrictedTerminalProps> = ({ sites, o
         <div className="bg-slate-900 rounded-t-xl p-3 flex items-center justify-between border-b border-slate-800">
           <div className="flex items-center gap-2">
             <Terminal className="w-4 h-4 text-slate-400" />
-            <span className="text-sm font-mono text-slate-200">root@kolab-runner:/var/www/{selectedSite.subdomain}</span>
+            <span className="text-sm font-mono text-slate-200">root@synology:~/{selectedSite.subdomain}</span>
           </div>
           {isExecuting && (
             <div className="flex items-center gap-2">

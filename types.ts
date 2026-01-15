@@ -138,6 +138,7 @@ export interface TerminalAction {
   command: string; // The actual command executed on server
   description: string;
   isDangerous?: boolean;
+  executionMode?: 'ssh' | 'local'; // Where the command is executed
 }
 
 export interface LogEntry {

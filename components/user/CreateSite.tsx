@@ -16,9 +16,17 @@ interface CreateSiteProps {
 type DbMode = 'NONE' | 'NEW' | 'ATTACH';
 type DeployStage = 'IDLE' | 'UPLOADING' | 'EXTRACTING' | 'CONFIGURING' | 'FINALIZING';
 
+interface DeployJob {
+  jobId: string;
+  name: string;
+  subdomain: string;
+  startedAt: string;
+}
+
 export const CreateSite: React.FC<CreateSiteProps> = ({ domains, onDeploy, user, sites = [], plans = [], onUpgrade }) => {
   const [deployStage, setDeployStage] = useState<DeployStage>('IDLE');
   const [uploadProgress, setUploadProgress] = useState(0);
+  const [activeJob, setActiveJob] = useState<DeployJob | null>(null);
   
   // Form State
   const [name, setName] = useState('');
@@ -35,12 +43,106 @@ export const CreateSite: React.FC<CreateSiteProps> = ({ domains, onDeploy, user,
   const [selectedOrphanId, setSelectedOrphanId] = useState('');
 
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const completedJobRef = useRef<string | null>(null);
 
   // --- LIMIT CHECK LOGIC ---
   const activeSites = sites.filter(s => s.status !== SiteStatus.DB_ONLY);
   const currentPlan = plans.find(p => p.name === user?.plan);
   const siteLimit = currentPlan?.limits?.sites || 0;
   const isLimitReached = activeSites.length >= siteLimit;
+
+  // Restore active job from localStorage on mount
+  useEffect(() => {
+    const savedJob = localStorage.getItem('activeDeployJob');
+    if (savedJob) {
+      try {
+        const job: DeployJob = JSON.parse(savedJob);
+        setActiveJob(job);
+        setDeployStage('EXTRACTING');
+      } catch (e) {
+        localStorage.removeItem('activeDeployJob');
+      }
+    }
+  }, []);
+
+  // Monitor active job status
+  useEffect(() => {
+    if (!activeJob) return;
+    if (completedJobRef.current === activeJob.jobId) return; // Already completed this job
+
+    const pollJob = async () => {
+      if (completedJobRef.current === activeJob.jobId) return; // Prevent multiple completions
+      
+      try {
+        const res = await fetch(`http://localhost:5000/api/deploy/${activeJob.jobId}`, {
+          headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` },
+        });
+        
+        if (!res.ok) {
+          throw new Error('Failed to fetch job status');
+        }
+        
+        const job = await res.json();
+        
+        if (job.status === 'completed') {
+          if (completedJobRef.current === activeJob.jobId) return; // Double check
+          completedJobRef.current = activeJob.jobId; // Mark this job as completed
+          
+          const siteName = activeJob.name;
+          
+          // Smooth transitions with state updates
+          setDeployStage('CONFIGURING');
+          await new Promise(r => setTimeout(r, 700));
+          
+          setDeployStage('FINALIZING');
+          await new Promise(r => setTimeout(r, 700));
+          
+          // Clean up and reset ALL state first
+          localStorage.removeItem('activeDeployJob');
+          setActiveJob(null);
+          setName('');
+          setSubdomain('');
+          setDbMode('NONE');
+          setSelectedOrphanId('');
+          setFile(null);
+          setUploadProgress(0);
+          
+          // Set to IDLE
+          setDeployStage('IDLE');
+          
+          // Wait for state to settle before showing alert
+          await new Promise(r => setTimeout(r, 300));
+          
+          // Show alert and trigger callback
+          alert(`Site "${siteName}" successfully deployed!`);
+          onDeploy();
+        } else if (job.status === 'failed') {
+          completedJobRef.current = activeJob.jobId;
+          localStorage.removeItem('activeDeployJob');
+          setActiveJob(null);
+          setError(job.error || 'Deployment failed');
+          setDeployStage('IDLE');
+          setUploadProgress(0);
+        } else {
+          // Still running - update based on phase
+          if (job.phase === 'saving') {
+            setDeployStage('CONFIGURING');
+          } else if (job.phase === 'extracting') {
+            setDeployStage('EXTRACTING');
+          }
+        }
+      } catch (e: any) {
+        console.error('Job polling error:', e);
+      }
+    };
+
+    const interval = setInterval(pollJob, 1500); // Poll every 1.5 seconds for smoother updates
+    pollJob(); // Initial poll
+
+    return () => {
+      clearInterval(interval);
+    };
+  }, [activeJob]);
 
   // Fetch Orphaned Databases on mount
   useEffect(() => {
@@ -137,26 +239,52 @@ export const CreateSite: React.FC<CreateSiteProps> = ({ domains, onDeploy, user,
         await simulateProgress(); // Visual only
         
         setDeployStage('EXTRACTING');
-        await api.sites.deploy(formData); // This has internal delay
         
-        setDeployStage('CONFIGURING');
-        await new Promise(r => setTimeout(r, 800));
+        // Call deploy API which returns jobId
+        const res = await fetch('http://localhost:5000/api/sites/deploy', {
+          method: 'POST',
+          headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` },
+          body: formData,
+        });
         
-        setDeployStage('FINALIZING');
-        await new Promise(r => setTimeout(r, 800));
+        if (!res.ok) {
+          throw new Error('Deployment failed');
+        }
+        
+        const data = await res.json();
+        
+        // If background job, save to localStorage
+        if (res.status === 202 && data.jobId) {
+          const job: DeployJob = {
+            jobId: data.jobId,
+            name,
+            subdomain: `${subdomain}.${selectedDomain}`,
+            startedAt: new Date().toISOString(),
+          };
+          localStorage.setItem('activeDeployJob', JSON.stringify(job));
+          setActiveJob(job);
+          // useEffect will handle polling
+        } else {
+          // Legacy sync response
+          setDeployStage('CONFIGURING');
+          await new Promise(r => setTimeout(r, 800));
+          
+          setDeployStage('FINALIZING');
+          await new Promise(r => setTimeout(r, 800));
 
-        // Success
-        setDeployStage('IDLE');
-        alert(`Site "${name}" successfully deployed!`);
-        onDeploy();
-        
-        // Reset
-        setName('');
-        setSubdomain('');
-        setDbMode('NONE');
-        setSelectedOrphanId('');
-        setFile(null);
-        setUploadProgress(0);
+          // Success
+          setDeployStage('IDLE');
+          alert(`Site "${name}" successfully deployed!`);
+          onDeploy();
+          
+          // Reset
+          setName('');
+          setSubdomain('');
+          setDbMode('NONE');
+          setSelectedOrphanId('');
+          setFile(null);
+          setUploadProgress(0);
+        }
     } catch (e: any) {
         setError(e.message || 'Deployment failed');
         setDeployStage('IDLE');

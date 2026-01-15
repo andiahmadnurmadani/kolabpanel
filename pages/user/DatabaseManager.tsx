@@ -230,7 +230,10 @@ export const DatabaseManager: React.FC<DatabaseManagerProps> = ({ sites, user, o
                     </div>
                 </div>
                 <button 
-                    onClick={() => window.open(`${window.location.origin}/phpmyadmin`, '_blank')}
+                    onClick={() => {
+                        const token = localStorage.getItem('kp_token');
+                        window.open(`http://localhost:5000/phpmyadmin?token=${token}`, '_blank');
+                    }}
                     className="py-2 px-4 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg font-medium text-sm transition-colors shadow-sm flex items-center justify-center gap-2"
                 >
                     <ExternalLink className="w-4 h-4" /> Open phpMyAdmin

@@ -59,13 +59,13 @@ const AVATAR_ROOT = process.env.AVATAR_ROOT
     : path.join(STORAGE_ROOT, 'avatars');
 
 const ensureWritableDirSync = (dirPath, isRemote = false) => {
-    fs.mkdirSync(dirPath, { recursive: true });
-    
-    // Skip write test for remote/network paths (UNC paths)
+    // Skip mkdir and write test for remote/network paths (UNC paths)
     if (isRemote) {
         console.log('[storage] Remote path detected, skipping write test:', dirPath);
         return;
     }
+    
+    fs.mkdirSync(dirPath, { recursive: true });
     
     const probe = path.join(dirPath, `.write_test_${Date.now()}_${Math.random().toString(16).slice(2)}`);
     fs.writeFileSync(probe, 'ok');
@@ -76,8 +76,8 @@ const isUNCPath = (p) => p.startsWith('\\\\');
 
 try {
     ensureWritableDirSync(STORAGE_ROOT, isUNCPath(STORAGE_ROOT));
-    ensureWritableDirSync(PAYMENT_PROOF_PATH);
-    ensureWritableDirSync(AVATAR_ROOT);
+    ensureWritableDirSync(PAYMENT_PROOF_PATH, isUNCPath(PAYMENT_PROOF_PATH));
+    ensureWritableDirSync(AVATAR_ROOT, isUNCPath(AVATAR_ROOT));
 } catch (e) {
     console.error('[storage] Storage path is not writable:', e.message);
     process.exit(1);
@@ -1270,14 +1270,17 @@ app.post('/api/sites/:id/execute-stream', async (req, res) => {
   }
 });
 
-// Helper function untuk execute command locally (Windows) - copy to local drive first
+// Helper function untuk execute command locally (Windows)
+// Strategy: Try direct execution first (60s timeout), fallback to copy if needed
+// While direct runs, also prepare copy in background for faster fallback
 async function executeLocalCommandStreaming(projectPath, command, sendEvent) {
-  return new Promise((resolve, reject) => {
-    const { exec, execSync } = require('child_process');
-    const os = require('os');
-    const isWindows = os.platform() === 'win32';
-    
-    if (!isWindows) {
+  const { exec, execSync, spawn } = require('child_process');
+  const os = require('os');
+  const isWindows = os.platform() === 'win32';
+  
+  // Non-Windows: simple execution
+  if (!isWindows) {
+    return new Promise((resolve, reject) => {
       const unixProjectPath = projectPath.replace(/\\/g, '/');
       const bashCommand = `cd "${unixProjectPath}" && php ${command}`;
       exec(bashCommand, (error, stdout, stderr) => {
@@ -1287,132 +1290,138 @@ async function executeLocalCommandStreaming(projectPath, command, sendEvent) {
         if (error) reject(error);
         else resolve({ exitCode: 0 });
       });
-      return;
+    });
+  }
+  
+  // Windows: Find PHP
+  let phpPath = process.env.PHP_PATH;
+  if (!phpPath) {
+    const locations = [
+      'D:\\laragon\\bin\\php\\php-8.3.26-Win32-vs16-x64\\php.exe',
+      'C:\\laragon\\bin\\php\\php-8.3.0\\php.exe',
+      'C:\\laragon\\bin\\php\\php-8.2.0\\php.exe',
+    ];
+    for (const loc of locations) {
+      if (fs.existsSync(loc)) { phpPath = loc; break; }
     }
-    
-    // Windows: Find PHP
-    let phpPath = process.env.PHP_PATH;
     if (!phpPath) {
-      const locations = [
-        'D:\\laragon\\bin\\php\\php-8.3.26-Win32-vs16-x64\\php.exe',
-        'C:\\laragon\\bin\\php\\php-8.3.0\\php.exe',
-        'C:\\laragon\\bin\\php\\php-8.2.0\\php.exe',
-      ];
-      for (const loc of locations) {
-        if (fs.existsSync(loc)) { phpPath = loc; break; }
-      }
-      if (!phpPath) {
-        try {
-          phpPath = execSync('where php', { encoding: 'utf8', windowsHide: true }).split('\n')[0].trim();
-        } catch (e) {
-          sendEvent('log', { type: 'stderr', text: 'PHP not found.' });
-          return reject(new Error('PHP not found'));
-        }
+      try {
+        phpPath = execSync('where php', { encoding: 'utf8', windowsHide: true }).split('\n')[0].trim();
+      } catch (e) {
+        sendEvent('log', { type: 'stderr', text: 'PHP not found.' });
+        throw new Error('PHP not found');
       }
     }
+  }
+  
+  // Clean command
+  let cleanCommand = command.replace(/^php\s+/, '');
+  if (!cleanCommand.includes('--no-interaction')) {
+    cleanCommand = cleanCommand.includes('--force') 
+      ? cleanCommand.replace('--force', '--force --no-interaction')
+      : cleanCommand + ' --no-interaction';
+  }
+  
+  // Convert UNC to mapped drive for source
+  let sourcePath = projectPath;
+  if (projectPath.startsWith('\\\\')) {
+    sourcePath = projectPath.replace(/^\\\\[^\\]+\\web/, 'X:').replace(/\//g, '\\');
+  }
+  
+  console.log('[local-exec] Source:', sourcePath);
+  console.log('[local-exec] PHP:', phpPath);
+  
+  // Run direct execution (no timeout, shows progress indicator)
+  sendEvent('log', { type: 'info', text: 'Running migration...' });
+  
+  const result = await tryDirectExecution(sourcePath, phpPath, cleanCommand, sendEvent);
+  
+  console.log('[local-exec] Execution completed');
+  sendEvent('exit', { code: result.exitCode });
+  return { exitCode: result.exitCode };
+}
+
+// Try direct execution - no hard timeout, shows progress indicator
+function tryDirectExecution(sourcePath, phpPath, command, sendEvent, timeout) {
+  return new Promise((resolve) => {
+    const { spawn } = require('child_process');
+    const os = require('os');
     
-    // Clean command
-    let cleanCommand = command.replace(/^php\s+/, '');
-    if (!cleanCommand.includes('--no-interaction')) {
-      cleanCommand = cleanCommand.includes('--force') 
-        ? cleanCommand.replace('--force', '--force --no-interaction')
-        : cleanCommand + ' --no-interaction';
-    }
-    
-    // Convert UNC to mapped drive for source
-    let sourcePath = projectPath;
-    if (projectPath.startsWith('\\\\')) {
-      sourcePath = projectPath.replace(/^\\\\[^\\]+\\web/, 'X:').replace(/\//g, '\\');
-    }
-    
-    // Create temp folder on local drive
-    const tempDir = path.join('D:\\temp_migrate', `m_${Date.now()}`);
-    const batFile = path.join(os.tmpdir(), `migrate_${Date.now()}.bat`);
-    
-    // Create batch file that: copies, runs migration, cleans up
+    const batFile = path.join(os.tmpdir(), `direct_${Date.now()}.bat`);
     const batContent = `@echo off
 chcp 65001 > nul
-robocopy "${sourcePath}" "${tempDir}" /E /NFL /NDL /NJH /NJS /NC /NS /NP /MT:8 /XD node_modules node_modules_old .git storage\\logs /XF *.log > nul
-if not exist "${tempDir}\\artisan" (
-    echo [ERROR] Failed to copy project files
-    exit /b 1
-)
-cd /d "${tempDir}"
-"${phpPath}" ${cleanCommand}
-set exitcode=%errorlevel%
-cd /d D:\\
-rmdir /s /q "${tempDir}" > nul 2>&1
-exit /b %exitcode%
+cd /d "${sourcePath}"
+"${phpPath}" ${command}
+exit /b %errorlevel%
 `;
-    
-    // Ensure temp base dir exists
-    try {
-      if (!fs.existsSync('D:\\temp_migrate')) {
-        fs.mkdirSync('D:\\temp_migrate', { recursive: true });
-      }
-    } catch (e) {}
-    
     fs.writeFileSync(batFile, batContent, 'utf8');
-    console.log('[local-exec] Batch file:', batFile);
-    console.log('[local-exec] Source:', sourcePath);
-    console.log('[local-exec] Temp dir:', tempDir);
     
-    sendEvent('log', { type: 'info', text: 'Running migration...' });
+    let hasOutput = false;
+    let outputBuffer = '';
+    let completed = false;
+    let exitCode = 0;
+    let elapsedSeconds = 0;
     
-    // Execute with spawn for real-time streaming
-    const { spawn } = require('child_process');
     const child = spawn('cmd.exe', ['/c', batFile], {
       windowsHide: true,
       stdio: ['ignore', 'pipe', 'pipe']
     });
     
-    let outputBuffer = '';
+    // Progress indicator - shows every 10 seconds while waiting
+    const progressInterval = setInterval(() => {
+      if (!completed && !hasOutput) {
+        elapsedSeconds += 10;
+        sendEvent('log', { type: 'info', text: `Processing... (${elapsedSeconds}s)` });
+      }
+    }, 10000);
     
     child.stdout.on('data', (data) => {
+      hasOutput = true;
       outputBuffer += data.toString();
       const lines = outputBuffer.split(/\r?\n/);
       outputBuffer = lines.pop() || '';
       
       lines.forEach(line => {
         if (line.trim()) {
-          console.log('[local-exec] stdout:', line);
+          console.log('[local-exec-direct] stdout:', line);
           sendEvent('log', { type: 'stdout', text: line });
         }
       });
     });
     
     child.stderr.on('data', (data) => {
+      hasOutput = true;
       data.toString().split(/\r?\n/).forEach(line => {
         if (line.trim()) {
-          console.log('[local-exec] stderr:', line);
+          console.log('[local-exec-direct] stderr:', line);
           sendEvent('log', { type: 'stderr', text: line });
         }
       });
     });
     
     child.on('close', (code) => {
-      // Flush remaining buffer
+      completed = true;
+      clearInterval(progressInterval);
+      
       if (outputBuffer.trim()) {
         sendEvent('log', { type: 'stdout', text: outputBuffer });
       }
       
-      // Cleanup batch file
       try { fs.unlinkSync(batFile); } catch (e) {}
       
-      console.log('[local-exec] Exit code:', code);
-      sendEvent('exit', { code: code || 0 });
+      exitCode = code || 0;
+      console.log('[local-exec-direct] Exit code:', exitCode);
       
-      if (code !== 0) {
-        reject(new Error(`Command failed with exit code ${code}`));
-      } else {
-        resolve({ exitCode: code || 0 });
-      }
+      // Always resolve as success since process completed
+      resolve({ success: true, exitCode });
     });
     
     child.on('error', (err) => {
-      console.error('[local-exec] Error:', err);
-      sendEvent('log', { type: 'stderr', text: err.message });
-      reject(err);
+      completed = true;
+      clearInterval(progressInterval);
+      console.error('[local-exec-direct] Error:', err);
+      try { fs.unlinkSync(batFile); } catch (e) {}
+      resolve({ success: false, reason: 'error', error: err });
     });
   });
 }

@@ -5,11 +5,18 @@ CREATE TABLE IF NOT EXISTS users (
   id VARCHAR(50) PRIMARY KEY,
   username VARCHAR(255) UNIQUE NOT NULL,
   password VARCHAR(255) NOT NULL,
-  email VARCHAR(255) NOT NULL,
+  email VARCHAR(255) UNIQUE NOT NULL,
   role VARCHAR(50) DEFAULT 'USER',
   plan VARCHAR(50) DEFAULT 'Basic',
   avatar VARCHAR(255),
-  status VARCHAR(50) DEFAULT 'ACTIVE'
+  status VARCHAR(50) DEFAULT 'ACTIVE',
+  email_verified BOOLEAN DEFAULT FALSE,
+  verification_token VARCHAR(255),
+  verification_expires DATETIME,
+  mysql_username VARCHAR(255),
+  mysql_password VARCHAR(255),
+  mysql_database VARCHAR(255),
+  INDEX idx_verification_token (verification_token)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS sites (
@@ -74,13 +81,11 @@ CREATE TABLE IF NOT EXISTS messages (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- Seed Initial Data
-INSERT IGNORE INTO users (id, username, password, email, role, plan, avatar, status) VALUES 
-('u1', 'demo_user', 'password', 'user@example.com', 'USER', 'Basic', 'https://picsum.photos/200', 'ACTIVE'),
-('a1', 'sys_admin', 'admin', 'admin@kolabpanel.com', 'ADMIN', 'Premium', 'https://picsum.photos/201', 'ACTIVE');
+INSERT IGNORE INTO users (id, username, password, email, role, plan, avatar, status, email_verified) VALUES 
+('u1', 'demo_user', 'password', 'user@example.com', 'USER', 'Basic', 'https://picsum.photos/200', 'ACTIVE', TRUE),
+('a1', 'sys_admin', 'admin', 'admin@kolabpanel.com', 'ADMIN', 'Premium', 'https://picsum.photos/201', 'ACTIVE', TRUE);
 
 INSERT IGNORE INTO plans (id, name, price, currency, features, limits, is_popular) VALUES 
 ('plan_basic', 'Basic', 0, 'Rp', '["1 Site", "100MB Storage", "Shared Database"]', '{"sites": 1, "storage": 100, "databases": 0}', FALSE),
 ('plan_pro', 'Pro', 50000, 'Rp', '["5 Sites", "1GB Storage", "Private Database"]', '{"sites": 5, "storage": 1024, "databases": 1}', TRUE),
-('plan_premium', 'Premium', 100000, 'Rp', '["Unlimited Sites", "10GB Storage"]', '{"sites": 9999, "storage": 10240, "databases": 5}', FALSE);
-
 INSERT IGNORE INTO domains (id, name, is_primary) VALUES ('d1', 'kolabpanel.com', TRUE);

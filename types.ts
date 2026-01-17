@@ -43,6 +43,9 @@ export interface User {
   planExpiresAt?: string; // ISO Date String
   avatar?: string;
   status: 'ACTIVE' | 'SUSPENDED';
+  mysql_username?: string;
+  mysql_password?: string;
+  mysql_database?: string;
 }
 
 export interface Site {

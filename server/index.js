@@ -218,11 +218,27 @@ const getSafePath = async (userId, siteName, relativePath) => {
     return { fullPath: safePath, siteDir, userDir };
 };
 
+// Middleware for JWT Authentication
+const authenticateToken = (req, res, next) => {
+    const authHeader = req.headers['authorization'];
+    const token = authHeader && authHeader.split(' ')[1];
+    if (!token) return res.status(401).json({ message: 'Authentication required' });
+
+    jwt.verify(token, SECRET_KEY, (err, user) => {
+        // If token expired/invalid, return 403
+        if (err) return res.status(403).json({ message: 'Invalid or expired token' });
+        req.user = user;
+        next();
+    });
+};
+
 // Load auth routes (register, verify-email)
 const sitesRoutes = require('./routes/sitesRoutes');
-app.use('/api/sites', sitesRoutes);
+const databaseRoutes = require('./routes/databaseRoutes');
 
 require('./routes/authRoutes')(app, db, SECRET_KEY);
+app.use('/api/sites', sitesRoutes);
+app.use('/api/database', authenticateToken, databaseRoutes);
 
 // --- ROUTES ---
 

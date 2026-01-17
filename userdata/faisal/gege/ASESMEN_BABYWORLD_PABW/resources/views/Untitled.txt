@@ -1,0 +1,15 @@
+Method yang harus ada di user (bisa ngelakuin apa aja)
+
+1. Add wishlist/remove
+2. Add cart/remove
+3. Purchase product (checkout)
+4. Edit profile (tmbah/edit address, ubah password, delete akun)
+
+
+Method yang harusnya ada di admin (bisa ngelakuin apa aja)
+
+1. Add product
+2. Add voucher
+3. Kelola transaksi
+
+Berikut use case dan activity diagram yang tadinya belum benar dan harus diperbaiki karena ketika dosen saya melihat hasilnya tidak sesuai dengan use case karena method dan relasinya tidak lengkap, dimana user dan admin methodnya masih banyak yg salah/kurang dan juga class lainnya tolong kamu perbaiki apa saja yg harus ditambah. Tolong analisis dengan detail methodnya dan relasi antar kelasnya (use case dan class diagramnya adalah hasil sistem informasi dari market place babyworld penjualan produk bayi)

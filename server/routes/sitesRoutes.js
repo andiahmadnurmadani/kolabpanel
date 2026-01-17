@@ -21,11 +21,11 @@ router.put('/:id', async (req, res) => {
         const site = sites[0];
 
         // If creating database
-        if (hasDatabase === true && !site.hasDatabase) {
+        if (hasDatabase === true && !site.has_database) {
             // Get user's MySQL credentials
             const [users] = await db.execute(
                 'SELECT mysql_username FROM users WHERE id = ?',
-                [site.userId]
+                [site.user_id]
             );
 
             if (users.length === 0 || !users[0].mysql_username) {
@@ -42,14 +42,14 @@ router.put('/:id', async (req, res) => {
         }
 
         // If dropping database
-        if (hasDatabase === false && site.hasDatabase) {
+        if (hasDatabase === false && site.has_database) {
             await dropProjectDatabase(site.subdomain);
             console.log(`[Sites API] Dropped database for site ${site.name}`);
         }
 
         // Update site record
         await db.execute(
-            'UPDATE sites SET hasDatabase = ? WHERE id = ?',
+            'UPDATE sites SET has_database = ? WHERE id = ?',
             [hasDatabase, id]
         );
 

@@ -1,17 +1,20 @@
 import React, { useState, useEffect } from 'react';
 import { User, Site, SiteStatus } from '../../types';
 import { api } from '../../services/api';
-import { Database, Server, ExternalLink, Trash2, Link, Table, ChevronDown, ChevronUp, FileSpreadsheet, Plus, X, Loader2, Unlink, AlertTriangle } from 'lucide-react';
+import { Database, Server, ExternalLink, Trash2, Link, Table, ChevronDown, ChevronUp, FileSpreadsheet, Plus, X, Loader2, Unlink, AlertTriangle, Download, Upload } from 'lucide-react';
 import { MasterCredentials } from '../../components/database/MasterCredentials';
 import { TableViewer } from '../../components/database/TableViewer';
+import { CreateTableModal } from '../../components/database/CreateTableModal';
+
+const API_Base = typeof window !== 'undefined' ? window.location.origin + '/api' : 'http://localhost:5000/api';
 
 interface DatabaseManagerProps {
-  sites: Site[];
-  user: User;
-  onRefresh: () => void;
+    sites: Site[];
+    user: User;
+    onRefresh: () => void;
 }
 
-interface MockTable {
+interface DBTable {
     name: string;
     rows: number;
     size: string;
@@ -19,28 +22,11 @@ interface MockTable {
     collation: string;
 }
 
-// Reuse definitions for Simulation
-interface ColumnDef {
-    name: string;
-    type: string;
-    collation: string;
-    null: 'YES' | 'NO';
-    key: 'PRI' | 'UNI' | '';
-    default: string | null;
-    extra: string;
-}
-
 interface TableViewState {
     dbName: string;
     tableName: string;
     mode: 'BROWSE' | 'STRUCTURE';
-}
-
-interface SimulatedDB {
-    [tableKey: string]: {
-        columns: ColumnDef[];
-        data: any[];
-    };
+    siteId: string;
 }
 
 export const DatabaseManager: React.FC<DatabaseManagerProps> = ({ sites, user, onRefresh }) => {
@@ -51,7 +37,7 @@ export const DatabaseManager: React.FC<DatabaseManagerProps> = ({ sites, user, o
     const safeSites = Array.isArray(sites) ? sites : [];
     const dbSites = safeSites.filter(site => site.hasDatabase);
     const sitesWithoutDb = safeSites.filter(site => !site.hasDatabase && site.status !== 'FAILED' && site.status !== SiteStatus.DB_ONLY);
-    
+
     const [expandedDb, setExpandedDb] = useState<string | null>(null);
     const [isCreating, setIsCreating] = useState(false);
     const [targetSiteId, setTargetSiteId] = useState('');
@@ -59,122 +45,35 @@ export const DatabaseManager: React.FC<DatabaseManagerProps> = ({ sites, user, o
     const [dbToDelete, setDbToDelete] = useState<Site | null>(null);
     const [isDeleting, setIsDeleting] = useState(false);
 
+    // Real Data State
+    const [tablesMap, setTablesMap] = useState<Record<string, DBTable[]>>({});
+    const [loadingTables, setLoadingTables] = useState<string | null>(null);
+
     // Table Viewer State
     const [viewingTable, setViewingTable] = useState<TableViewState | null>(null);
-    const [dbStore, setDbStore] = useState<SimulatedDB>({});
-    
-    // Delete Confirmation for Table Data
-    const [tableDataToDelete, setTableDataToDelete] = useState<(number | string)[] | null>(null);
+    // Table Creation State
+    const [creatingTableInDb, setCreatingTableInDb] = useState<{ siteId: string, dbName: string } | null>(null);
 
     const copyToClipboard = (text: string) => {
         navigator.clipboard.writeText(text);
     };
 
-    // --- SEEDERS & MOCK LOGIC ---
-    const getMockTables = (site: Site): MockTable[] => {
-         return [
-            { name: 'migrations', rows: 3, size: '16 KB', engine: 'InnoDB', collation: 'utf8mb4_unicode_ci' },
-            { name: 'users', rows: 5, size: '48 KB', engine: 'InnoDB', collation: 'utf8mb4_unicode_ci' },
-        ];
+    const refreshTables = (siteId: string) => {
+        setLoadingTables(siteId);
+        api.database.getTables(siteId)
+            .then((tables: any) => {
+                setTablesMap(prev => ({ ...prev, [siteId]: tables }));
+            })
+            .catch(err => console.error("Failed to fetch tables", err))
+            .finally(() => setLoadingTables(null));
     };
 
-    const seedStructure = (tableName: string): ColumnDef[] => {
-        const commonCols: ColumnDef[] = [
-            { name: 'id', type: 'bigint(20)', collation: '', null: 'NO', key: 'PRI', default: '', extra: 'auto_increment' },
-            { name: 'created_at', type: 'timestamp', collation: '', null: 'YES', key: '', default: 'NULL', extra: '' },
-            { name: 'updated_at', type: 'timestamp', collation: '', null: 'YES', key: '', default: 'NULL', extra: '' },
-        ];
-        if (tableName === 'users') {
-            return [
-                commonCols[0],
-                { name: 'name', type: 'varchar(255)', collation: 'utf8mb4_unicode_ci', null: 'NO', key: '', default: '', extra: '' },
-                { name: 'email', type: 'varchar(255)', collation: 'utf8mb4_unicode_ci', null: 'NO', key: 'UNI', default: '', extra: '' },
-                { name: 'role', type: 'enum("admin","user")', collation: 'utf8mb4_unicode_ci', null: 'NO', key: '', default: 'user', extra: '' },
-                ...commonCols.slice(1)
-            ];
-        } 
-        return [
-            { name: 'id', type: 'int(10) unsigned', collation: '', null: 'NO', key: 'PRI', default: '', extra: 'auto_increment' },
-            { name: 'migration', type: 'varchar(255)', collation: 'utf8mb4_unicode_ci', null: 'NO', key: '', default: '', extra: '' },
-            { name: 'batch', type: 'int(11)', collation: '', null: 'NO', key: '', default: '', extra: '' },
-        ];
-    };
-
-    const seedData = (tableName: string) => {
-        if (tableName === 'users') {
-            return [
-                { id: 1, name: 'Admin User', email: 'admin@example.com', role: 'admin', created_at: '2023-10-01 10:00:00', updated_at: '2023-10-01 10:00:00' },
-                { id: 2, name: 'John Doe', email: 'john@example.com', role: 'user', created_at: '2023-10-02 11:30:00', updated_at: '2023-10-02 11:30:00' },
-                { id: 3, name: 'Jane Smith', email: 'jane@example.com', role: 'user', created_at: '2023-10-05 09:15:00', updated_at: '2023-10-05 09:15:00' },
-            ];
-        }
-        return [
-            { id: 1, migration: '2014_10_12_000000_create_users_table', batch: 1 },
-            { id: 2, migration: '2019_12_14_000001_create_personal_access_tokens_table', batch: 1 },
-            { id: 3, migration: '2023_01_01_000000_create_posts_table', batch: 2 },
-        ];
-    };
-
-    const getTableContext = (dbName: string, tableName: string) => {
-        const key = `${dbName}_${tableName}`;
-        if (dbStore[key]) return dbStore[key];
-        return { columns: seedStructure(tableName), data: seedData(tableName) };
-    };
-
+    // Fetch tables when expanded
     useEffect(() => {
-        if (viewingTable) {
-            const key = `${viewingTable.dbName}_${viewingTable.tableName}`;
-            if (!dbStore[key]) {
-                setDbStore(prev => ({ ...prev, [key]: getTableContext(viewingTable.dbName, viewingTable.tableName) }));
-            }
+        if (expandedDb) {
+            refreshTables(expandedDb);
         }
-    }, [viewingTable]);
-
-    const handleSaveTableData = (formData: any, targetIndex: number | null) => {
-        if (!viewingTable) return;
-        const key = `${viewingTable.dbName}_${viewingTable.tableName}`;
-        const currentStore = dbStore[key] || getTableContext(viewingTable.dbName, viewingTable.tableName);
-        
-        if (viewingTable.mode === 'BROWSE') {
-            let newRows = [...currentStore.data];
-            if (targetIndex !== null) {
-                newRows[targetIndex] = { ...newRows[targetIndex], ...formData };
-            } else {
-                const maxId = newRows.reduce((max, r) => (r.id > max ? r.id : max), 0);
-                newRows.push({ ...formData, id: maxId + 1 });
-            }
-            setDbStore(prev => ({ ...prev, [key]: { ...currentStore, data: newRows } }));
-        } else {
-            let newCols = [...currentStore.columns];
-            if (targetIndex !== null) {
-                newCols[targetIndex] = formData as ColumnDef;
-            } else {
-                newCols.push(formData as ColumnDef);
-            }
-            setDbStore(prev => ({ ...prev, [key]: { ...currentStore, columns: newCols } }));
-        }
-    };
-
-    const initiateDeleteTableData = (ids: (number | string)[]) => {
-        setTableDataToDelete(ids);
-    };
-
-    const confirmDeleteTableData = () => {
-        if (!viewingTable || !tableDataToDelete) return;
-
-        const key = `${viewingTable.dbName}_${viewingTable.tableName}`;
-        const currentStore = dbStore[key];
-
-        if (viewingTable.mode === 'BROWSE') {
-            // IDs here are indices
-            const newRows = currentStore.data.filter((_, i) => !tableDataToDelete.includes(i));
-            setDbStore(prev => ({ ...prev, [key]: { ...currentStore, data: newRows } }));
-        } else {
-            const newCols = currentStore.columns.filter((_, i) => !tableDataToDelete.includes(i));
-            setDbStore(prev => ({ ...prev, [key]: { ...currentStore, columns: newCols } }));
-        }
-        setTableDataToDelete(null);
-    };
+    }, [expandedDb]);
 
     // --- ACTIONS ---
     const handleCreateDatabase = async () => {
@@ -210,6 +109,44 @@ export const DatabaseManager: React.FC<DatabaseManagerProps> = ({ sites, user, o
         }
     };
 
+    const handleExport = (siteId: string) => {
+        window.open(`${API_Base}/database/${siteId}/export`, '_blank');
+    };
+
+    const handleImport = async (siteId: string, file: File) => {
+        if (!file) return;
+        const reader = new FileReader();
+        reader.onload = async (e) => {
+            const sql = e.target?.result as string;
+            if (!sql) return;
+
+            if (!confirm(`WARNING: Importing SQL will execute commands directly against your database 'db_...'. existing tables might be dropped if the SQL contains DROP TABLE commands.\n\nAre you sure you want to proceed?`)) return;
+
+            try {
+                // We need to send this to the import endpoint
+                const res = await fetch(`${API_Base}/database/${siteId}/import`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${localStorage.getItem('token')}` // simple assumption using saved token
+                    },
+                    body: JSON.stringify({ sql })
+                });
+
+                if (!res.ok) {
+                    const err = await res.json();
+                    throw new Error(err.message || 'Import failed');
+                }
+
+                alert("Import successful! Tables refreshed.");
+                refreshTables(siteId);
+            } catch (err: any) {
+                alert("Import error: " + err.message);
+            }
+        };
+        reader.readAsText(file);
+    };
+
     return (
         <div className="space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-500 relative">
             {/* Header & Status */}
@@ -229,23 +166,13 @@ export const DatabaseManager: React.FC<DatabaseManagerProps> = ({ sites, user, o
                         </div>
                     </div>
                 </div>
-                <button 
-                    onClick={() => {
-                        const token = localStorage.getItem('kp_token');
-                        window.open(`http://localhost:5000/phpmyadmin?token=${token}`, '_blank');
-                    }}
-                    className="py-2 px-4 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg font-medium text-sm transition-colors shadow-sm flex items-center justify-center gap-2"
-                >
-                    <ExternalLink className="w-4 h-4" /> Open phpMyAdmin
-                </button>
+                {/* phpMyAdmin button removed */}
             </div>
 
-            {/* Master Credentials */}
             <MasterCredentials user={user} copyToClipboard={copyToClipboard} />
 
-            {/* Database List */}
             <div className="space-y-4">
-                 <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
                     <h3 className="text-lg font-bold text-slate-800 flex items-center gap-2 px-1">
                         <Database className="w-5 h-5 text-indigo-600" />
                         Your Databases
@@ -254,111 +181,157 @@ export const DatabaseManager: React.FC<DatabaseManagerProps> = ({ sites, user, o
                     <button onClick={() => setIsCreating(true)} className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-sm font-medium shadow-sm transition-colors flex items-center justify-center gap-2">
                         <Plus className="w-4 h-4" /> New Database
                     </button>
-                 </div>
+                </div>
 
-                 {dbSites.length > 0 ? (
+                {dbSites.length > 0 ? (
                     <div className="flex flex-col gap-4">
-                    {dbSites.map((site) => {
-                        const dbName = `db_${site.subdomain.replace(/[^a-z0-9]/g, '')}`;
-                        const isExpanded = expandedDb === site.id;
-                        const tables = getMockTables(site);
-                        const totalRows = tables.reduce((acc, t) => acc + t.rows, 0);
-                        const isOrphan = site.status === SiteStatus.DB_ONLY;
+                        {dbSites.map((site) => {
+                            const dbName = `db_${site.subdomain.replace(/[^a-z0-9]/g, '')}`;
+                            const isExpanded = expandedDb === site.id;
+                            const tables = tablesMap[site.id] || [];
+                            const totalRows = tables.reduce((acc, t) => acc + t.rows, 0);
+                            const isOrphan = site.status === SiteStatus.DB_ONLY;
+                            const isLoading = loadingTables === site.id;
 
-                        return (
-                            <div key={site.id} className={`bg-white rounded-xl shadow-sm border transition-all duration-300 overflow-hidden ${isExpanded ? 'border-indigo-200 ring-2 ring-indigo-50 shadow-md' : 'border-slate-200 hover:border-indigo-300'} ${isOrphan ? 'bg-slate-50/50' : ''}`}>
-                                <div className="p-5 flex flex-col md:flex-row justify-between items-center gap-4 cursor-pointer bg-slate-50/30 hover:bg-slate-50 transition-colors" onClick={() => setExpandedDb(isExpanded ? null : site.id)}>
-                                    <div className="flex items-center gap-4 w-full md:w-auto">
-                                        <div className={`w-12 h-12 rounded-lg flex items-center justify-center border shadow-sm transition-colors ${isExpanded ? 'bg-indigo-600 text-white border-indigo-600' : isOrphan ? 'bg-slate-100 text-slate-400 border-slate-200' : 'bg-white text-indigo-600 border-slate-200'}`}>
-                                            <Database className="w-6 h-6" />
-                                        </div>
-                                        <div>
-                                            <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-0.5">Database Name</div>
-                                            <h4 className="font-bold text-slate-900 font-mono text-lg flex items-center gap-2">
-                                                {dbName}
-                                                {isOrphan && <span className="text-xs bg-amber-100 text-amber-700 px-2 py-0.5 rounded-full border border-amber-200 font-sans">Detached</span>}
-                                            </h4>
-                                        </div>
-                                    </div>
-                                    <div className="flex items-center gap-6 w-full md:w-auto justify-between md:justify-end">
-                                        <div className="hidden md:block text-right">
-                                            <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-0.5">Linked Project</div>
-                                            <div className="font-medium text-slate-700 flex items-center gap-1 justify-end">
-                                                {isOrphan ? (<span className="text-slate-400 flex items-center gap-1 italic"><Unlink className="w-3 h-3" /> None (Deleted)</span>) : (<span className="flex items-center gap-1"><Link className="w-3 h-3" /> {site.name}</span>)}
+                            return (
+                                <div key={site.id} className={`bg-white rounded-xl shadow-sm border transition-all duration-300 overflow-hidden ${isExpanded ? 'border-indigo-200 ring-2 ring-indigo-50 shadow-md' : 'border-slate-200 hover:border-indigo-300'} ${isOrphan ? 'bg-slate-50/50' : ''}`}>
+                                    <div className="p-5 flex flex-col md:flex-row justify-between items-center gap-4 cursor-pointer bg-slate-50/30 hover:bg-slate-50 transition-colors" onClick={() => setExpandedDb(isExpanded ? null : site.id)}>
+                                        <div className="flex items-center gap-4 w-full md:w-auto">
+                                            <div className={`w-12 h-12 rounded-lg flex items-center justify-center border shadow-sm transition-colors ${isExpanded ? 'bg-indigo-600 text-white border-indigo-600' : isOrphan ? 'bg-slate-100 text-slate-400 border-slate-200' : 'bg-white text-indigo-600 border-slate-200'}`}>
+                                                <Database className="w-6 h-6" />
+                                            </div>
+                                            <div>
+                                                <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-0.5">Database Name</div>
+                                                <h4 className="font-bold text-slate-900 font-mono text-lg flex items-center gap-2">
+                                                    {dbName}
+                                                    {isOrphan && <span className="text-xs bg-amber-100 text-amber-700 px-2 py-0.5 rounded-full border border-amber-200 font-sans">Detached</span>}
+                                                </h4>
                                             </div>
                                         </div>
-                                        <div className="flex items-center gap-3">
-                                            <div className="hidden sm:flex flex-col items-end mr-2">
-                                                 <span className="text-xs font-bold text-slate-700">{tables.length} Tables</span>
-                                                 <span className="text-[10px] text-slate-500">~{totalRows} Rows</span>
-                                            </div>
-                                            <button className={`p-2 rounded-lg transition-colors border ${isExpanded ? 'bg-indigo-50 text-indigo-600 border-indigo-100' : 'bg-white text-slate-400 border-slate-200'}`}>
-                                                {isExpanded ? <ChevronUp className="w-5 h-5" /> : <ChevronDown className="w-5 h-5" />}
-                                            </button>
-                                        </div>
-                                    </div>
-                                </div>
-                                {isExpanded && (
-                                    <div className="border-t border-slate-200 animate-in slide-in-from-top-2 duration-200">
-                                        <div className="p-6 bg-slate-50/50">
-                                            <div className="flex items-center justify-between mb-4">
-                                                <h5 className="font-bold text-slate-800 flex items-center gap-2"><Table className="w-4 h-4 text-slate-500" /> Database Tables</h5>
-                                                <div className="text-xs text-slate-500 bg-white px-2 py-1 rounded border border-slate-200">Showing {tables.length} tables</div>
-                                            </div>
-                                            <div className="bg-white rounded-lg border border-slate-200 overflow-hidden shadow-sm">
-                                                <div className="overflow-x-auto">
-                                                    <table className="min-w-full text-left text-sm">
-                                                        <thead className="bg-slate-50 text-slate-500 border-b border-slate-200">
-                                                            <tr>
-                                                                <th className="px-4 py-3 font-medium">Table Name</th>
-                                                                <th className="px-4 py-3 font-medium">Rows</th>
-                                                                <th className="px-4 py-3 font-medium">Size</th>
-                                                                <th className="px-4 py-3 font-medium">Engine</th>
-                                                                <th className="px-4 py-3 font-medium">Collation</th>
-                                                                <th className="px-4 py-3 font-medium text-right">Actions</th>
-                                                            </tr>
-                                                        </thead>
-                                                        <tbody className="divide-y divide-slate-100">
-                                                            {tables.map((t, i) => (
-                                                                <tr key={i} className="hover:bg-indigo-50/30 transition-colors group">
-                                                                    <td className="px-4 py-3 font-medium text-slate-700 flex items-center gap-2"><FileSpreadsheet className="w-4 h-4 text-slate-400 group-hover:text-indigo-500" /> {t.name}</td>
-                                                                    <td className="px-4 py-3 text-slate-600">{t.rows.toLocaleString()}</td>
-                                                                    <td className="px-4 py-3 text-slate-600 font-mono text-xs">{t.size}</td>
-                                                                    <td className="px-4 py-3 text-slate-500 text-xs">{t.engine}</td>
-                                                                    <td className="px-4 py-3 text-slate-500 text-xs">{t.collation}</td>
-                                                                    <td className="px-4 py-3 text-right">
-                                                                        <div className="flex justify-end gap-2 opacity-50 group-hover:opacity-100 transition-opacity">
-                                                                            <button onClick={() => setViewingTable({ dbName, tableName: t.name, mode: 'BROWSE' })} className="text-xs text-indigo-600 hover:underline hover:text-indigo-800 font-medium">Browse</button>
-                                                                            <span className="text-slate-300">|</span>
-                                                                            <button onClick={() => setViewingTable({ dbName, tableName: t.name, mode: 'STRUCTURE' })} className="text-xs text-indigo-600 hover:underline hover:text-indigo-800 font-medium">Structure</button>
-                                                                        </div>
-                                                                    </td>
-                                                                </tr>
-                                                            ))}
-                                                        </tbody>
-                                                    </table>
+                                        <div className="flex items-center gap-6 w-full md:w-auto justify-between md:justify-end">
+                                            <div className="hidden md:block text-right">
+                                                <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-0.5">Linked Project</div>
+                                                <div className="font-medium text-slate-700 flex items-center gap-1 justify-end">
+                                                    {isOrphan ? (<span className="text-slate-400 flex items-center gap-1 italic"><Unlink className="w-3 h-3" /> None (Deleted)</span>) : (<span className="flex items-center gap-1"><Link className="w-3 h-3" /> {site.name}</span>)}
                                                 </div>
                                             </div>
-                                            <div className="mt-4 flex justify-end">
-                                                <button onClick={() => setDbToDelete(site)} className="text-xs text-red-500 hover:text-red-700 hover:bg-red-50 px-3 py-2 rounded transition-colors flex items-center gap-1"><Trash2 className="w-3 h-3" /> Drop Database</button>
+                                            <div className="flex items-center gap-3">
+                                                <div className="hidden sm:flex flex-col items-end mr-2">
+                                                    <span className="text-xs font-bold text-slate-700">{isLoading ? 'Loading...' : `${tables.length} Tables`}</span>
+                                                    {!isLoading && <span className="text-[10px] text-slate-500">~{totalRows} Rows</span>}
+                                                </div>
+                                                <button className={`p-2 rounded-lg transition-colors border ${isExpanded ? 'bg-indigo-50 text-indigo-600 border-indigo-100' : 'bg-white text-slate-400 border-slate-200'}`}>
+                                                    {isExpanded ? <ChevronUp className="w-5 h-5" /> : <ChevronDown className="w-5 h-5" />}
+                                                </button>
                                             </div>
                                         </div>
                                     </div>
-                                )}
-                            </div>
-                        );
-                    })}
+                                    {isExpanded && (
+                                        <div className="border-t border-slate-200 animate-in slide-in-from-top-2 duration-200">
+                                            <div className="p-6 bg-slate-50/50">
+                                                <div className="flex items-center justify-between mb-4">
+                                                    <h5 className="font-bold text-slate-800 flex items-center gap-2"><Table className="w-4 h-4 text-slate-500" /> Database Tables</h5>
+                                                    <div className="flex items-center gap-3">
+                                                        <div className="text-xs text-slate-500 bg-white px-2 py-1 rounded border border-slate-200">Showing {tables.length} tables</div>
+                                                        <div className="flex gap-2">
+                                                            <button
+                                                                onClick={() => handleExport(site.id)}
+                                                                className="text-xs flex items-center gap-1 bg-white hover:bg-indigo-50 text-indigo-600 border border-slate-200 hover:border-indigo-200 px-3 py-1.5 rounded-lg transition-colors font-medium shadow-sm"
+                                                                title="Export Database to SQL"
+                                                            >
+                                                                <Download className="w-3 h-3" /> Export SQL
+                                                            </button>
+                                                            <div className="relative">
+                                                                <input
+                                                                    type="file"
+                                                                    accept=".sql"
+                                                                    onChange={(e) => {
+                                                                        if (e.target.files?.[0]) handleImport(site.id, e.target.files[0]);
+                                                                        e.target.value = ''; // reset
+                                                                    }}
+                                                                    className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+                                                                />
+                                                                <button
+                                                                    className="text-xs flex items-center gap-1 bg-indigo-600 hover:bg-indigo-700 text-white border border-transparent px-3 py-1.5 rounded-lg transition-colors font-medium shadow-sm"
+                                                                    title="Import SQL File"
+                                                                >
+                                                                    <Upload className="w-3 h-3" /> Import SQL
+                                                                </button>
+                                                            </div>
+                                                            <button
+                                                                onClick={() => setCreatingTableInDb({ siteId: site.id, dbName })}
+                                                                className="text-xs flex items-center gap-1 bg-white hover:bg-indigo-50 text-indigo-600 border border-slate-200 hover:border-indigo-200 px-3 py-1.5 rounded-lg transition-colors font-medium shadow-sm"
+                                                            >
+                                                                <Plus className="w-3 h-3" /> Create Table
+                                                            </button>
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                                <div className="bg-white rounded-lg border border-slate-200 overflow-hidden shadow-sm">
+                                                    <div className="overflow-x-auto">
+                                                        <table className="min-w-full text-left text-sm">
+                                                            <thead className="bg-slate-50 text-slate-500 border-b border-slate-200">
+                                                                <tr>
+                                                                    <th className="px-4 py-3 font-medium">Table Name</th>
+                                                                    <th className="px-4 py-3 font-medium">Rows</th>
+                                                                    <th className="px-4 py-3 font-medium">Size</th>
+                                                                    <th className="px-4 py-3 font-medium">Engine</th>
+                                                                    <th className="px-4 py-3 font-medium">Collation</th>
+                                                                    <th className="px-4 py-3 font-medium text-right">Actions</th>
+                                                                </tr>
+                                                            </thead>
+                                                            <tbody className="divide-y divide-slate-100">
+                                                                {isLoading ? (
+                                                                    <tr>
+                                                                        <td colSpan={6} className="px-6 py-10 text-center text-slate-500">
+                                                                            <div className="flex justify-center mb-2"><Loader2 className="w-6 h-6 animate-spin text-indigo-500" /></div>
+                                                                            Fetching tables...
+                                                                        </td>
+                                                                    </tr>
+                                                                ) : tables.length > 0 ? (
+                                                                    tables.map((t, i) => (
+                                                                        <tr key={i} className="hover:bg-indigo-50/30 transition-colors group">
+                                                                            <td className="px-4 py-3 font-medium text-slate-700 flex items-center gap-2"><FileSpreadsheet className="w-4 h-4 text-slate-400 group-hover:text-indigo-500" /> {t.name}</td>
+                                                                            <td className="px-4 py-3 text-slate-600">{t.rows.toLocaleString()}</td>
+                                                                            <td className="px-4 py-3 text-slate-600 font-mono text-xs">{t.size}</td>
+                                                                            <td className="px-4 py-3 text-slate-500 text-xs">{t.engine}</td>
+                                                                            <td className="px-4 py-3 text-slate-500 text-xs">{t.collation}</td>
+                                                                            <td className="px-4 py-3 text-right">
+                                                                                <div className="flex justify-end gap-2 opacity-50 group-hover:opacity-100 transition-opacity">
+                                                                                    <button onClick={() => setViewingTable({ dbName, tableName: t.name, mode: 'BROWSE', siteId: site.id })} className="text-xs text-indigo-600 hover:underline hover:text-indigo-800 font-medium">Browse</button>
+                                                                                    <span className="text-slate-300">|</span>
+                                                                                    <button onClick={() => setViewingTable({ dbName, tableName: t.name, mode: 'STRUCTURE', siteId: site.id })} className="text-xs text-indigo-600 hover:underline hover:text-indigo-800 font-medium">Structure</button>
+                                                                                </div>
+                                                                            </td>
+                                                                        </tr>
+                                                                    ))
+                                                                ) : (
+                                                                    <tr><td colSpan={6} className="px-6 py-8 text-center text-slate-500 italic">No tables found. Create one to get started!</td></tr>
+                                                                )}
+                                                            </tbody>
+                                                        </table>
+                                                    </div>
+                                                </div>
+                                                <div className="mt-4 flex justify-end">
+                                                    <button onClick={() => setDbToDelete(site)} className="text-xs text-red-500 hover:text-red-700 hover:bg-red-50 px-3 py-2 rounded transition-colors flex items-center gap-1"><Trash2 className="w-3 h-3" /> Drop Database</button>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    )}
+                                </div>
+                            );
+                        })}
                     </div>
-                 ) : (
+                ) : (
                     <div className="text-center py-16 bg-white rounded-2xl border-2 border-dashed border-slate-200 flex flex-col items-center">
                         <div className="w-16 h-16 bg-slate-50 text-slate-300 rounded-full flex items-center justify-center mb-4"><Database className="w-8 h-8" /></div>
                         <h3 className="text-lg font-bold text-slate-800">No Databases Found</h3>
                         <p className="text-slate-500 mt-2 max-w-sm mx-auto text-sm">You haven't created any databases yet.</p>
                     </div>
-                 )}
+                )}
             </div>
 
-            {/* Modals */}
+            {/* Existing Modals ... */}
             {isCreating && (
                 <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
                     <div className="absolute inset-0 bg-slate-900/60 backdrop-blur-sm transition-opacity" onClick={() => setIsCreating(false)} />
@@ -398,7 +371,7 @@ export const DatabaseManager: React.FC<DatabaseManagerProps> = ({ sites, user, o
                     </div>
                 </div>
             )}
-            
+
             {dbToDelete && (
                 <div className="fixed inset-0 z-[60] flex items-center justify-center p-4">
                     <div className="absolute inset-0 bg-slate-900/60 backdrop-blur-sm transition-opacity" onClick={() => setDbToDelete(null)} />
@@ -425,40 +398,22 @@ export const DatabaseManager: React.FC<DatabaseManagerProps> = ({ sites, user, o
                 </div>
             )}
 
-            {/* Table Data Delete Confirmation Modal */}
-            {tableDataToDelete && (
-                <div className="fixed inset-0 z-[80] flex items-center justify-center p-4">
-                    <div className="absolute inset-0 bg-slate-900/60 backdrop-blur-sm transition-opacity" onClick={() => setTableDataToDelete(null)} />
-                    <div className="relative w-full max-w-sm bg-white rounded-xl shadow-2xl p-6 animate-in fade-in zoom-in-95 duration-200">
-                        <div className="flex items-start gap-4">
-                            <div className="p-3 bg-red-100 rounded-full shrink-0"><AlertTriangle className="w-6 h-6 text-red-600" /></div>
-                            <div>
-                                <h3 className="text-lg font-bold text-slate-900">Delete Data?</h3>
-                                <p className="text-sm text-slate-500 mt-1">
-                                    Are you sure you want to delete {tableDataToDelete.length} {viewingTable?.mode === 'BROWSE' ? 'row(s)' : 'column(s)'}?
-                                </p>
-                                <div className="mt-2 text-xs text-red-600 bg-red-50 p-2 rounded border border-red-100 flex items-center gap-2">
-                                    This action cannot be undone.
-                                </div>
-                            </div>
-                        </div>
-                        <div className="mt-6 flex justify-end gap-3">
-                            <button onClick={() => setTableDataToDelete(null)} className="px-4 py-2 text-slate-600 hover:bg-slate-50 rounded-lg font-medium text-sm transition-colors">Cancel</button>
-                            <button onClick={confirmDeleteTableData} className="px-4 py-2 bg-red-600 text-white rounded-lg font-medium text-sm hover:bg-red-700 shadow-sm transition-colors flex items-center gap-2"><Trash2 className="w-4 h-4" /> Delete</button>
-                        </div>
-                    </div>
-                </div>
+            {viewingTable && (
+                <TableViewer
+                    viewingTable={viewingTable}
+                    onClose={() => setViewingTable(null)}
+                />
             )}
 
-            {viewingTable && (
-                <TableViewer 
-                    viewingTable={viewingTable}
-                    data={dbStore[`${viewingTable.dbName}_${viewingTable.tableName}`] || getTableContext(viewingTable.dbName, viewingTable.tableName)}
-                    onClose={() => setViewingTable(null)}
-                    onSave={handleSaveTableData}
-                    onDelete={initiateDeleteTableData}
-                    onRefresh={() => {}}
-                    switchMode={(mode) => setViewingTable({...viewingTable, mode})}
+            {creatingTableInDb && (
+                <CreateTableModal
+                    siteId={creatingTableInDb.siteId}
+                    dbName={creatingTableInDb.dbName}
+                    onClose={() => setCreatingTableInDb(null)}
+                    onSuccess={() => {
+                        refreshTables(creatingTableInDb.siteId);
+                        setCreatingTableInDb(null);
+                    }}
                 />
             )}
         </div>

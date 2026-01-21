@@ -21,8 +21,8 @@ export const FileRow: React.FC<FileRowProps> = ({
 }) => {
     return (
         <div 
-            className="grid grid-cols-12 gap-4 px-4 py-3 hover:bg-white items-center text-sm group transition-all cursor-pointer hover:shadow-sm h-[53px]"
-            onDoubleClick={() => file.type === 'folder' && onNavigate(file.name)}
+            className="grid grid-cols-12 gap-4 px-4 py-3 hover:bg-white items-center text-sm group transition-all cursor-pointer hover:shadow-sm h-[53px] select-none"
+            onClick={() => file.type === 'folder' && onNavigate(file.name)}
         >
             <div className="col-span-6 flex items-center gap-3 text-slate-700 group-hover:text-indigo-700 transition-colors">
                 {file.type === 'folder' ? 

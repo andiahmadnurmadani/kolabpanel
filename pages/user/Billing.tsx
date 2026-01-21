@@ -1,8 +1,9 @@
 import React, { useState, useEffect } from 'react';
 import { Card, StatusBadge } from '../../components/Shared';
-import { HostingPlan, User, Payment, DiscountCode } from '../../types';
-import { CreditCard, QrCode, Upload, Check, Loader2, X, AlertTriangle, ArrowRight, RefreshCcw, FileText, Clock, Tag, Gift } from 'lucide-react';
+import { HostingPlan, User, Payment, DiscountCode, PaymentStatus } from '../../types';
+import { CreditCard, QrCode, Upload, Check, Loader2, X, AlertTriangle, ArrowRight, RefreshCcw, FileText, Clock, Tag, Gift, FileImage } from 'lucide-react';
 import { api } from '../../services/api';
+import { API_URL } from '../../services/api/core';
 
 interface BillingProps {
     plans: HostingPlan[];
@@ -26,6 +27,7 @@ export const Billing: React.FC<BillingProps> = ({ plans = [], userPlanName = 'Ba
 
     // History State
     const [paymentHistory, setPaymentHistory] = useState<Payment[]>([]);
+    const [viewingProof, setViewingProof] = useState<Payment | null>(null);
 
     useEffect(() => {
         loadHistory();
@@ -94,6 +96,23 @@ export const Billing: React.FC<BillingProps> = ({ plans = [], userPlanName = 'Ba
         setAppliedDiscount(null);
         setCouponCode('');
         setDiscountError('');
+    };
+
+    // Helper for URL resolution (Shared with Admin)
+    const getImageUrl = (url: string) => {
+        if (!url) return '';
+        if (url.startsWith('http') || url.startsWith('blob:')) {
+            if (url === 'mock_proof_url.jpg') {
+                return "https://images.unsplash.com/photo-1554224155-8d04cb21cd6c?q=80&w=1000&auto=format&fit=crop";
+            }
+            return url;
+        }
+        if (url === 'mock_proof_url.jpg') {
+             return "https://images.unsplash.com/photo-1554224155-8d04cb21cd6c?q=80&w=1000&auto=format&fit=crop";
+        }
+        // Prepend backend URL for relative paths
+        const backendRoot = API_URL.replace('/api', '');
+        return `${backendRoot}${url}`;
     };
 
     // --- CALCULATION LOGIC START ---
@@ -212,6 +231,7 @@ export const Billing: React.FC<BillingProps> = ({ plans = [], userPlanName = 'Ba
                                     <th className="px-6 py-3 font-medium">Method</th>
                                     <th className="px-6 py-3 font-medium">Amount</th>
                                     <th className="px-6 py-3 font-medium">Status</th>
+                                    <th className="px-6 py-3 font-medium text-right">Receipt</th>
                                 </tr>
                             </thead>
                             <tbody className="divide-y divide-slate-50">
@@ -238,6 +258,14 @@ export const Billing: React.FC<BillingProps> = ({ plans = [], userPlanName = 'Ba
                                         <td className="px-6 py-4">
                                             <StatusBadge status={pay.status} />
                                         </td>
+                                        <td className="px-6 py-4 text-right">
+                                            <button 
+                                                onClick={() => setViewingProof(pay)}
+                                                className="text-xs font-medium text-slate-500 hover:text-indigo-600 hover:underline flex items-center justify-end gap-1 w-full"
+                                            >
+                                                <FileImage className="w-3.5 h-3.5" /> View
+                                            </button>
+                                        </td>
                                     </tr>
                                 ))}
                             </tbody>
@@ -245,6 +273,39 @@ export const Billing: React.FC<BillingProps> = ({ plans = [], userPlanName = 'Ba
                     </div>
                  )}
              </Card>
+
+             {/* RECEIPT VIEWER MODAL */}
+             {viewingProof && (
+                <div className="fixed inset-0 z-[80] flex items-center justify-center p-4">
+                    <div className="absolute inset-0 bg-slate-900/80 backdrop-blur-sm transition-opacity" onClick={() => setViewingProof(null)} />
+                    <div className="relative w-full max-w-lg bg-white rounded-xl shadow-2xl overflow-hidden animate-in fade-in zoom-in-95 duration-200 flex flex-col max-h-[90vh]">
+                        <div className="px-5 py-4 border-b border-slate-100 flex justify-between items-center bg-slate-50">
+                            <div>
+                                <h3 className="font-bold text-slate-800 flex items-center gap-2">
+                                    <FileImage className="w-4 h-4 text-indigo-600" /> Payment Receipt
+                                </h3>
+                                <p className="text-xs text-slate-500">
+                                    Transaction <span className="font-mono">#{viewingProof.id}</span>
+                                </p>
+                            </div>
+                            <button onClick={() => setViewingProof(null)} className="p-1.5 hover:bg-slate-200 rounded-full text-slate-400 transition-colors">
+                                <X className="w-5 h-5" />
+                            </button>
+                        </div>
+                        
+                        <div className="p-1 bg-slate-200 overflow-y-auto flex-1 flex items-center justify-center min-h-[300px]">
+                            <img 
+                                src={getImageUrl(viewingProof.proofUrl)} 
+                                alt="Proof" 
+                                className="max-w-full h-auto object-contain shadow-sm rounded-sm" 
+                                onError={(e) => {
+                                    (e.target as HTMLImageElement).src = 'https://placehold.co/600x400?text=Image+Load+Error';
+                                }}
+                            />
+                        </div>
+                    </div>
+                </div>
+             )}
 
              {/* PAYMENT MODAL */}
              {selectedPlan && (

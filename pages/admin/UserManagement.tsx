@@ -108,6 +108,8 @@ export const UserManagement: React.FC = () => {
       return { label: 'Active', color: 'bg-blue-100 text-blue-700', days: diffDays };
   };
 
+  const getInitials = (name: string) => name.substring(0, 2).toUpperCase();
+
   return (
     <>
       <div className="space-y-6 animate-in fade-in duration-300">
@@ -148,7 +150,13 @@ export const UserManagement: React.FC = () => {
                   <tr key={user.id} className="hover:bg-slate-50/50 transition-colors">
                     <td className="px-6 py-4">
                       <div className="flex items-center gap-3">
-                        <img src={user.avatar} alt="" className="w-10 h-10 rounded-full bg-slate-200 object-cover" />
+                        {user.avatar ? (
+                            <img src={user.avatar} alt="" className="w-10 h-10 rounded-full bg-slate-200 object-cover" />
+                        ) : (
+                            <div className="w-10 h-10 rounded-full bg-indigo-100 text-indigo-700 flex items-center justify-center font-bold text-xs">
+                                {getInitials(user.username)}
+                            </div>
+                        )}
                         <div>
                           <div className="font-semibold text-slate-900">{user.username}</div>
                           <div className="text-slate-500 text-xs">{user.email}</div>
@@ -307,7 +315,13 @@ export const UserManagement: React.FC = () => {
             
             <div className="p-6 space-y-6 overflow-y-auto">
               <div className="flex items-center gap-4">
-                 <img src={selectedUser.avatar} className="w-16 h-16 rounded-full border-2 border-slate-100" />
+                 {selectedUser.avatar ? (
+                    <img src={selectedUser.avatar} className="w-16 h-16 rounded-full border-2 border-slate-100 object-cover" />
+                 ) : (
+                    <div className="w-16 h-16 rounded-full bg-indigo-100 text-indigo-700 flex items-center justify-center font-bold text-2xl border-2 border-indigo-50">
+                        {getInitials(selectedUser.username)}
+                    </div>
+                 )}
                  <div>
                     <h4 className="text-xl font-bold text-slate-900">{selectedUser.username}</h4>
                     <p className="text-slate-500">{selectedUser.email}</p>

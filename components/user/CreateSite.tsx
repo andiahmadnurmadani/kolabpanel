@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { Card } from '../Shared';
 import { Framework, Domain, Site, SiteStatus, User, HostingPlan } from '../../types';
-import { Upload, FileArchive, Check, Loader2, Database, Link, Plus, Unlink, CheckCircle2, Circle, FileText, Server, Globe, Lock, Zap, ArrowRight } from 'lucide-react';
+import { Upload, FileArchive, Check, Loader2, Database, Link, Plus, Unlink, CheckCircle2, Circle, FileText, Server, Globe, Lock, Zap, ArrowRight, FileCog } from 'lucide-react';
 import { api } from '../../services/api';
 
 interface CreateSiteProps {
@@ -19,6 +19,7 @@ type DeployStage = 'IDLE' | 'UPLOADING' | 'EXTRACTING' | 'CONFIGURING' | 'FINALI
 export const CreateSite: React.FC<CreateSiteProps> = ({ domains, onDeploy, user, sites = [], plans = [], onUpgrade }) => {
   const [deployStage, setDeployStage] = useState<DeployStage>('IDLE');
   const [uploadProgress, setUploadProgress] = useState(0);
+  const [extractProgress, setExtractProgress] = useState(0); // New state for extraction
   
   // Form State
   const [name, setName] = useState('');
@@ -55,6 +56,23 @@ export const CreateSite: React.FC<CreateSiteProps> = ({ domains, onDeploy, user,
         }
     };
     fetchOrphans();
+  }, [deployStage]);
+
+  // Simulate extraction progress when stage is EXTRACTING
+  useEffect(() => {
+      if (deployStage === 'EXTRACTING') {
+          setExtractProgress(0);
+          const interval = setInterval(() => {
+              setExtractProgress(prev => {
+                  if (prev >= 95) {
+                      clearInterval(interval);
+                      return 95;
+                  }
+                  return prev + Math.floor(Math.random() * 5) + 1; // Random increment
+              });
+          }, 300); // Fast ticks
+          return () => clearInterval(interval);
+      }
   }, [deployStage]);
 
   const validateAndSetFile = (selectedFile: File) => {
@@ -101,9 +119,8 @@ export const CreateSite: React.FC<CreateSiteProps> = ({ domains, onDeploy, user,
       }
   };
 
-  const simulateProgress = async () => {
-      // Simulate upload chunking
-      for (let i = 0; i <= 100; i += 5) {
+  const simulateUpload = async () => {
+      for (let i = 0; i <= 100; i += 8) {
           setUploadProgress(i);
           await new Promise(r => setTimeout(r, 100)); // fast simulation
       }
@@ -134,11 +151,15 @@ export const CreateSite: React.FC<CreateSiteProps> = ({ domains, onDeploy, user,
 
     try {
         setDeployStage('UPLOADING');
-        await simulateProgress(); // Visual only
+        await simulateUpload();
         
         setDeployStage('EXTRACTING');
-        await api.sites.deploy(formData); // This has internal delay
+        // The API call will block until extraction is done on server
+        await api.sites.deploy(formData); 
         
+        setExtractProgress(100); // Jump to 100 on success
+        await new Promise(r => setTimeout(r, 500)); // Brief pause to show completion
+
         setDeployStage('CONFIGURING');
         await new Promise(r => setTimeout(r, 800));
         
@@ -157,10 +178,12 @@ export const CreateSite: React.FC<CreateSiteProps> = ({ domains, onDeploy, user,
         setSelectedOrphanId('');
         setFile(null);
         setUploadProgress(0);
+        setExtractProgress(0);
     } catch (e: any) {
         setError(e.message || 'Deployment failed');
         setDeployStage('IDLE');
         setUploadProgress(0);
+        setExtractProgress(0);
     }
   };
 
@@ -244,6 +267,25 @@ export const CreateSite: React.FC<CreateSiteProps> = ({ domains, onDeploy, user,
                                         style={{ width: `${uploadProgress}%` }}
                                       />
                                   </div>
+                              </div>
+                          )}
+
+                          {/* Progress Bar for Extraction */}
+                          {deployStage === 'EXTRACTING' && (
+                              <div className="space-y-2 mb-6 animate-in slide-in-from-bottom-2">
+                                  <div className="flex justify-between text-xs font-semibold text-slate-600">
+                                      <span className="flex items-center gap-1"><FileCog className="w-3 h-3" /> Extracting & Processing Files...</span>
+                                      <span>{extractProgress}%</span>
+                                  </div>
+                                  <div className="h-2 w-full bg-slate-100 rounded-full overflow-hidden relative">
+                                      <div 
+                                        className="h-full bg-amber-500 rounded-full transition-all duration-500 ease-out relative overflow-hidden"
+                                        style={{ width: `${extractProgress}%` }}
+                                      >
+                                          <div className="absolute inset-0 bg-white/20 w-full h-full animate-[shimmer_1s_infinite] -skew-x-12"></div>
+                                      </div>
+                                  </div>
+                                  <p className="text-[10px] text-slate-400 text-center pt-1">Large archives may take a moment to unpack on the server.</p>
                               </div>
                           )}
 

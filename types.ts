@@ -1,5 +1,4 @@
 
-
 export enum UserRole {
   USER = 'USER',
   ADMIN = 'ADMIN'
@@ -40,9 +39,10 @@ export interface User {
   email: string;
   role: UserRole;
   plan: string; // Changed from PlanType to string to support dynamic plans
-  planExpiresAt?: string; // ISO Date String
   avatar?: string;
   status: 'ACTIVE' | 'SUSPENDED';
+  planExpiresAt?: string;
+  theme?: 'light' | 'dark';
 }
 
 export interface Site {
@@ -67,16 +67,6 @@ export interface Payment {
   status: PaymentStatus;
   date: string;
   proofUrl: string;
-}
-
-export interface DiscountCode {
-  id: string;
-  code: string;
-  type: 'PERCENT' | 'FIXED';
-  value: number;
-  status: 'ACTIVE' | 'USED';
-  validPlans: string[]; // List of plan names this coupon is valid for. Empty = All.
-  createdAt: string;
 }
 
 export interface SupportTicket {
@@ -127,7 +117,6 @@ export interface FileNode {
   path: string; // The directory path this file belongs to (e.g., "/" or "/src")
   content?: string; // Mock content for download
   createdAt: string;
-  siteId?: string;
 }
 
 export type SiteFileSystem = Record<string, FileNode[]>;
@@ -138,6 +127,7 @@ export interface TerminalAction {
   command: string; // The actual command executed on server
   description: string;
   isDangerous?: boolean;
+  executionMode?: 'ssh' | 'local'; // Where the command is executed
 }
 
 export interface LogEntry {
@@ -147,7 +137,26 @@ export interface LogEntry {
   type: 'info' | 'error' | 'success' | 'command';
 }
 
+export interface DiscountCode {
+  id: string;
+  code: string;
+  type: 'PERCENT' | 'FIXED';
+  value: number;
+  validPlans: string[];
+}
+
 export interface TunnelRoute {
   hostname: string;
   service: string;
+}
+
+export interface Notification {
+  id: string;
+  userId: string; // Can be specific User ID or 'ADMIN' for all admins
+  title: string;
+  message: string;
+  type: 'INFO' | 'SUCCESS' | 'WARNING' | 'ERROR';
+  read: boolean;
+  createdAt: string;
+  link?: string; // Optional internal link (e.g., 'BILLING')
 }

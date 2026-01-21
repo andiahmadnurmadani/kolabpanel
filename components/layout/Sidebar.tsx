@@ -1,6 +1,7 @@
+
 import React from 'react';
 import { UserRole, User } from '../../types';
-import { LayoutDashboard, Server, FolderOpen, Database, CreditCard, LogOut, FileText, Activity, Users, User as UserIcon, Globe, ShoppingBag, Terminal, ShieldCheck, X, MessageSquare, Network, Settings, BookOpen } from 'lucide-react';
+import { LayoutDashboard, Server, FolderOpen, Database, CreditCard, LogOut, FileText, Activity, Users, User as UserIcon, Globe, ShoppingBag, Terminal, ShieldCheck, X, MessageSquare, Network, Settings, BookOpen, Cloud } from 'lucide-react';
 
 interface SidebarProps {
   user: User;
@@ -81,7 +82,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ user, isOpen, setIsOpen, curre
             <NavItem view="ADMIN_PLANS" icon={ShoppingBag} label="Manage Plans" />
             
             <div className="text-xs font-bold text-slate-500 uppercase tracking-wider px-4 mb-2 mt-8">Configuration</div>
-            <NavItem view="ADMIN_TUNNELS" icon={Network} label="Network Tunnels" />
+            <NavItem view="ADMIN_TUNNELS" icon={Cloud} label="Cloudflare" />
             <NavItem view="ADMIN_APACHE" icon={Settings} label="Apache Config" />
             
             <div className="text-xs font-bold text-slate-500 uppercase tracking-wider px-4 mb-2 mt-8">System</div>

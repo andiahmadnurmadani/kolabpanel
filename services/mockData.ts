@@ -1,4 +1,5 @@
-import { User, HostingPlan, Domain, UserRole, DiscountCode, TunnelRoute } from '../types';
+
+import { User, HostingPlan, Domain, UserRole, TunnelRoute } from '../types';
 
 // --- LOCAL STORAGE HELPERS ---
 export const DELAY = 600; // Simulate network latency (ms)
@@ -13,39 +14,16 @@ export const DB_KEYS = {
     PAYMENTS: 'kp_payments',
     TICKETS: 'kp_tickets',
     MESSAGES: 'kp_messages',
+    TUNNELS: 'kp_tunnels',
     DISCOUNTS: 'kp_discounts',
-    TOKEN: 'kp_token',
-    TUNNELS: 'kp_tunnels' // Added for persistence
+    NOTIFICATIONS: 'kp_notifications',
+    TOKEN: 'kp_token'
 };
-
-// Calculate dates for demo
-const futureDate = new Date();
-futureDate.setDate(futureDate.getDate() + 365); // 1 year
-const nearExpiryDate = new Date();
-nearExpiryDate.setDate(nearExpiryDate.getDate() + 5); // 5 days (Trigger Warning)
 
 // Initial Data
 export const INITIAL_USERS: User[] = [
-    { 
-        id: 'u1', 
-        username: 'demo_user', 
-        email: 'user@example.com', 
-        role: UserRole.USER, 
-        plan: 'Basic', 
-        avatar: 'https://picsum.photos/200', 
-        status: 'ACTIVE',
-        planExpiresAt: nearExpiryDate.toISOString() // Set to expire in 5 days for demo
-    },
-    { 
-        id: 'a1', 
-        username: 'sys_admin', 
-        email: 'admin@kolabpanel.com', 
-        role: UserRole.ADMIN, 
-        plan: 'Premium', 
-        avatar: 'https://picsum.photos/201', 
-        status: 'ACTIVE',
-        planExpiresAt: futureDate.toISOString()
-    }
+    { id: 'u1', username: 'demo_user', email: 'user@example.com', role: UserRole.USER, plan: 'Basic', avatar: '', status: 'ACTIVE', theme: 'light' },
+    { id: 'a1', username: 'sys_admin', email: 'admin@kolabpanel.com', role: UserRole.ADMIN, plan: 'Premium', avatar: '', status: 'ACTIVE', theme: 'dark' }
 ];
 
 export const INITIAL_PASSWORDS: Record<string, string> = {
@@ -64,10 +42,11 @@ export const INITIAL_DOMAINS: Domain[] = [
 ];
 
 export const INITIAL_TUNNELS: TunnelRoute[] = [
-    { hostname: 'api.kolabpanel.com', service: 'http://127.0.0.1:5000' },
-    { hostname: 'demo.kolabpanel.com', service: 'http://127.0.0.1:3000' },
-    { hostname: 'manager.kolab.top', service: 'http://127.0.0.1:9058' },
-    { hostname: 'db.kolabpanel.com', service: 'http://127.0.0.1:8080' }
+    { hostname: 'api.kolabpanel.com', service: 'http://127.0.0.1:3000' },
+    { hostname: 'app.kolabpanel.com', service: 'http://127.0.0.1:5173' },
+    { hostname: 'demo.kolabpanel.com', service: 'http://127.0.0.1:8000' },
+    { hostname: 'status.kolabpanel.com', service: 'http://127.0.0.1:3001' },
+    { hostname: 'db.kolabpanel.com', service: 'http://127.0.0.1:3306' }
 ];
 
 // Helper to simulate async API call

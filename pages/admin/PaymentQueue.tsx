@@ -3,6 +3,7 @@ import { Card, StatusBadge } from '../../components/Shared';
 import { api } from '../../services/api';
 import { Payment, PaymentStatus, DiscountCode, HostingPlan } from '../../types';
 import { CheckCircle, XCircle, Eye, FileImage, X, CreditCard, QrCode, History, ListFilter, Search, Ticket, Plus, Shuffle, Trash2, Percent, DollarSign, Tag, CheckSquare, Square } from 'lucide-react';
+import { API_URL } from '../../services/api/core';
 
 export const PaymentQueue: React.FC = () => {
     const [payments, setPayments] = useState<Payment[]>([]);
@@ -49,10 +50,24 @@ export const PaymentQueue: React.FC = () => {
 
     // Helper to handle mock urls vs real urls
     const getImageUrl = (url: string) => {
-        if (url === 'mock_proof_url.jpg') {
-            return "https://images.unsplash.com/photo-1554224155-8d04cb21cd6c?q=80&w=1000&auto=format&fit=crop";
+        if (!url) return '';
+        if (url.startsWith('http') || url.startsWith('blob:')) {
+            // Check if it's the specific mock placeholder
+            if (url === 'mock_proof_url.jpg') {
+                return "https://images.unsplash.com/photo-1554224155-8d04cb21cd6c?q=80&w=1000&auto=format&fit=crop";
+            }
+            return url;
         }
-        return url;
+        
+        if (url === 'mock_proof_url.jpg') {
+             return "https://images.unsplash.com/photo-1554224155-8d04cb21cd6c?q=80&w=1000&auto=format&fit=crop";
+        }
+
+        // It is a relative path from our backend (e.g. /uploads/proofs/...)
+        // We need to prepend the backend root URL. 
+        // API_URL is usually 'http://localhost:5000/api', we need 'http://localhost:5000'
+        const backendRoot = API_URL.replace('/api', '');
+        return `${backendRoot}${url}`;
     };
 
     const generateRandomCode = () => {
@@ -305,7 +320,9 @@ export const PaymentQueue: React.FC = () => {
                 </Card>
             )}
 
-            {/* DISCOUNT CODES VIEW */}
+            {/* DISCOUNT CODES VIEW & MODALS remain the same... */}
+            {/* ... (Keeping existing discount logic) ... */}
+            
             {activeTab === 'DISCOUNTS' && (
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
                     <div className="md:col-span-3">
@@ -379,7 +396,7 @@ export const PaymentQueue: React.FC = () => {
                 </div>
             )}
 
-            {/* Proof Viewer Modal (Reused) */}
+            {/* Proof Viewer Modal */}
             {viewingProof && (
                 <div className="fixed inset-0 z-[80] flex items-center justify-center p-4">
                     <div className="absolute inset-0 bg-slate-900/80 backdrop-blur-sm transition-opacity" onClick={() => setViewingProof(null)} />
@@ -399,10 +416,14 @@ export const PaymentQueue: React.FC = () => {
                         </div>
                         
                         <div className="p-1 bg-slate-200 overflow-y-auto flex-1 flex items-center justify-center min-h-[300px]">
+                            {/* Updated Image logic to handle local path resolution */}
                             <img 
                                 src={getImageUrl(viewingProof.proofUrl)} 
                                 alt="Proof" 
-                                className="max-w-full h-auto object-contain shadow-sm rounded-sm" 
+                                className="max-w-full h-auto object-contain shadow-sm rounded-sm"
+                                onError={(e) => {
+                                    (e.target as HTMLImageElement).src = 'https://placehold.co/600x400?text=Image+Load+Error';
+                                }}
                             />
                         </div>
 

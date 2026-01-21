@@ -1,7 +1,8 @@
+
 import React, { useState, useEffect } from 'react';
 import { Card } from '../../components/Shared';
 import { api } from '../../services/api';
-import { Users, DollarSign, Network, CheckCircle, Server, TrendingUp, CreditCard, Globe, ArrowUpRight, ArrowDownRight, Clock, FileCode, X, RefreshCw, Loader2 } from 'lucide-react';
+import { Users, DollarSign, Network, Server, TrendingUp, Globe, ArrowUpRight, ArrowDownRight, Clock, RefreshCw, Loader2, X } from 'lucide-react';
 import { BarChart, Bar, XAxis, CartesianGrid, Tooltip, ResponsiveContainer, AreaChart, Area, YAxis } from 'recharts';
 
 export const AdminDashboard: React.FC = () => {
@@ -24,12 +25,20 @@ export const AdminDashboard: React.FC = () => {
   useEffect(() => {
      const loadStats = async () => {
          try {
-             const [statsData, analyticsData, revenueData] = await Promise.all([
+             // Added api.admin.tunnels.list() to fetch real Cloudflare data
+             const [statsData, analyticsData, revenueData, tunnelsList] = await Promise.all([
                  api.admin.getStats(),
                  api.admin.getTunnelAnalytics(5), // Fetch top 5 for chart
-                 api.admin.getRevenueAnalytics()
+                 api.admin.getRevenueAnalytics(),
+                 api.admin.tunnels.list() 
              ]);
-             setStats(statsData);
+
+             // Override totalTunnels with the actual length from the list
+             setStats({
+                 ...statsData,
+                 totalTunnels: tunnelsList.length 
+             });
+             
              setAnalytics(analyticsData.data || []);
              setRevenueChartData(revenueData);
          } catch (e) {
@@ -152,16 +161,16 @@ export const AdminDashboard: React.FC = () => {
             value={stats.totalTunnels} 
             icon={Network} 
             gradient="bg-gradient-to-br from-orange-500 to-amber-500"
-            trend="Stable"
+            trend="Live"
             trendUp={true} 
             subLabel="Cloudflare Routes"
         />
       </div>
 
       {/* Charts Section */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+      <div className="grid grid-cols-1 gap-6">
         {/* Main Revenue Chart */}
-        <div className="lg:col-span-2">
+        <div className="w-full">
             <Card className="h-full border-0 shadow-md ring-1 ring-slate-200/60">
                 <div className="px-6 py-4 border-b border-slate-100 flex justify-between items-center">
                     <div>
@@ -175,7 +184,7 @@ export const AdminDashboard: React.FC = () => {
                     </select>
                 </div>
                 <div className="p-6 h-[320px]">
-                    <ResponsiveContainer width="100%" height="100%">
+                    <ResponsiveContainer width="100%" height="100%" minWidth={0}>
                         <AreaChart data={revenueChartData}>
                             <defs>
                                 <linearGradient id="colorIncome" x1="0" y1="0" x2="0" y2="1">
@@ -197,10 +206,11 @@ export const AdminDashboard: React.FC = () => {
                 </div>
             </Card>
         </div>
+      </div>
 
-        {/* Traffic Analytics (Top Hosts) */}
-        <div className="lg:col-span-1">
-             <Card className="h-full border-0 shadow-md ring-1 ring-slate-200/60">
+      {/* Traffic Analytics (Full Width) */}
+      <div className="grid grid-cols-1">
+         <Card className="h-full border-0 shadow-md ring-1 ring-slate-200/60">
                 <div className="px-6 py-4 border-b border-slate-100 flex justify-between items-center">
                     <div>
                         <h3 className="font-bold text-slate-800 flex items-center gap-2">
@@ -215,26 +225,17 @@ export const AdminDashboard: React.FC = () => {
                         View All
                     </button>
                 </div>
-                <div className="p-6 h-[320px]">
+                <div className="p-6 h-[250px]">
                     {analytics.length > 0 ? (
-                        <ResponsiveContainer width="100%" height="100%">
-                            <BarChart data={analytics} layout="vertical" margin={{ left: 0, right: 20, bottom: 0, top: 0 }}>
-                                <CartesianGrid strokeDasharray="3 3" horizontal={true} vertical={false} stroke="#e2e8f0" />
-                                <XAxis type="number" hide />
-                                <YAxis 
-                                    type="category" 
-                                    dataKey="host" 
-                                    width={100} 
-                                    tick={{fontSize: 10, fill: '#64748b'}} 
-                                    axisLine={false} 
-                                    tickLine={false}
-                                    tickFormatter={(val) => val.length > 15 ? val.substring(0, 15) + '...' : val}
-                                />
+                        <ResponsiveContainer width="100%" height="100%" minWidth={0}>
+                            <BarChart data={analytics} margin={{ left: 0, right: 0, bottom: 0, top: 0 }}>
+                                <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e2e8f0" />
+                                <XAxis dataKey="host" tick={{fontSize: 10, fill: '#64748b'}} axisLine={false} tickLine={false} />
                                 <Tooltip 
                                     cursor={{fill: '#f1f5f9'}} 
                                     contentStyle={{borderRadius: '8px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)'}} 
                                 />
-                                <Bar dataKey="visits" fill="#10b981" radius={[0, 4, 4, 0]} barSize={20} />
+                                <Bar dataKey="visits" fill="#10b981" radius={[4, 4, 0, 0]} barSize={40} />
                             </BarChart>
                         </ResponsiveContainer>
                     ) : (
@@ -244,8 +245,7 @@ export const AdminDashboard: React.FC = () => {
                         </div>
                     )}
                 </div>
-             </Card>
-        </div>
+         </Card>
       </div>
 
       {/* Full Analytics Modal */}

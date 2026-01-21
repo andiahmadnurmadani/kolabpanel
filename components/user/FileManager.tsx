@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { Card } from '../Shared';
 import { Site, FileNode } from '../../types';
-import { HardDrive, Upload, Folder, Trash2, Edit2, ChevronDown, Download, CornerUpLeft, Home, Plus, Loader2, X, Check, AlertTriangle } from 'lucide-react';
+import { HardDrive, Upload, Folder, Trash2, Edit2, ChevronDown, Download, CornerUpLeft, Home, Plus, Loader2, X, Check, AlertTriangle, Save, FileCode } from 'lucide-react';
 import { useFileSystem } from '../../hooks/useFileSystem';
 import { FileRow } from '../files/FileRow';
 
@@ -25,8 +25,17 @@ export const FileManager: React.FC<FileManagerProps> = ({ sites }) => {
   const [isCreatingFolder, setIsCreatingFolder] = useState(false);
   const [newFolderName, setNewFolderName] = useState('');
 
+  // Editor State
+  const [editor, setEditor] = useState({ 
+      isOpen: false, 
+      fileName: '', 
+      content: '', 
+      isLoading: false,
+      isSaving: false
+  });
+
   const selectedSite = sites.find(s => s.id === selectedSiteId) || sites[0];
-  const { currentFiles, loadingFiles, fetchFiles, uploadFile, deleteFile, renameFile, createFolder } = useFileSystem(sites);
+  const { currentFiles, loadingFiles, fetchFiles, uploadFile, deleteFile, renameFile, createFolder, getFileContent, saveFileContent } = useFileSystem(sites);
 
   useEffect(() => {
       if (selectedSite) {
@@ -36,6 +45,16 @@ export const FileManager: React.FC<FileManagerProps> = ({ sites }) => {
           setIsCreatingFolder(false);
       }
   }, [selectedSiteId, currentPath, selectedSite]);
+
+  // Sort files: Folders first, then alphabetically
+  const sortedFiles = React.useMemo(() => {
+      return [...currentFiles].sort((a, b) => {
+          if (a.type === b.type) {
+              return a.name.localeCompare(b.name, undefined, { sensitivity: 'base', numeric: true });
+          }
+          return a.type === 'folder' ? -1 : 1;
+      });
+  }, [currentFiles]);
 
   const handleNavigate = (folderName: string) => {
       if (renamingId || isCreatingFolder) return;
@@ -107,6 +126,34 @@ export const FileManager: React.FC<FileManagerProps> = ({ sites }) => {
       }
   };
 
+  // --- EDITOR HANDLERS ---
+  const handleEditClick = async (e: React.MouseEvent, node: FileNode) => {
+      e.stopPropagation();
+      if (!selectedSite) return;
+
+      setEditor({ isOpen: true, fileName: node.name, content: '', isLoading: true, isSaving: false });
+      
+      try {
+          const content = await getFileContent(selectedSite.id, currentPath, node.name);
+          setEditor(prev => ({ ...prev, content, isLoading: false }));
+      } catch (err) {
+          setEditor(prev => ({ ...prev, content: 'Error loading file content.', isLoading: false }));
+      }
+  };
+
+  const handleSaveFile = async () => {
+      if (!selectedSite) return;
+      
+      setEditor(prev => ({ ...prev, isSaving: true }));
+      try {
+          await saveFileContent(selectedSite.id, currentPath, editor.fileName, editor.content);
+          setEditor(prev => ({ ...prev, isOpen: false, isSaving: false }));
+      } catch (err) {
+          alert("Failed to save file.");
+          setEditor(prev => ({ ...prev, isSaving: false }));
+      }
+  };
+
   const SiteSelector = () => (
     <div className="relative group">
       <div className="flex items-center gap-2">
@@ -133,7 +180,7 @@ export const FileManager: React.FC<FileManagerProps> = ({ sites }) => {
       )
   }
 
-  const showList = currentFiles.length > 0 || isCreatingFolder;
+  const showList = sortedFiles.length > 0 || isCreatingFolder;
 
   return (
     <Card title="File Manager" action={<SiteSelector />} className="h-[650px]">
@@ -195,7 +242,7 @@ export const FileManager: React.FC<FileManagerProps> = ({ sites }) => {
                     </div>
                 )}
 
-                {currentFiles.map((file) => (
+                {sortedFiles.map((file) => (
                     <FileRow 
                         key={file.id}
                         file={file}
@@ -204,6 +251,7 @@ export const FileManager: React.FC<FileManagerProps> = ({ sites }) => {
                         setRenameValue={setRenameValue}
                         onRenameClick={handleRenameClick}
                         onDeleteClick={handleDeleteClick}
+                        onEditContentClick={handleEditClick}
                         onDownloadClick={(e, f) => alert("Download feature requires a static file serving endpoint setup in Express.")}
                         onNavigate={handleNavigate}
                         submitRename={submitRename}
@@ -217,10 +265,11 @@ export const FileManager: React.FC<FileManagerProps> = ({ sites }) => {
           </div>
           
           <div className="mt-4 pt-4 border-t border-slate-100 flex justify-between items-center text-xs text-slate-500 shrink-0">
-            <div>{currentFiles.length} items</div>
+            <div>{sortedFiles.length} items</div>
             <div>Total Used: {selectedSite.storageUsed} MB</div>
           </div>
 
+          {/* Delete Confirmation Modal */}
           {deleteTarget && (
             <div className="fixed inset-0 z-[60] flex items-center justify-center p-4">
                 <div className="absolute inset-0 bg-slate-900/60 backdrop-blur-sm transition-opacity" onClick={() => setDeleteTarget(null)} />
@@ -239,6 +288,62 @@ export const FileManager: React.FC<FileManagerProps> = ({ sites }) => {
                     </div>
                 </div>
             </div>
+          )}
+
+          {/* CODE EDITOR MODAL */}
+          {editor.isOpen && (
+              <div className="fixed inset-0 z-[70] flex items-center justify-center p-4">
+                  <div className="absolute inset-0 bg-slate-900/80 backdrop-blur-sm transition-opacity" onClick={() => setEditor(prev => ({...prev, isOpen: false}))} />
+                  <div className="relative w-full max-w-5xl bg-white rounded-xl shadow-2xl overflow-hidden animate-in fade-in zoom-in-95 duration-200 flex flex-col h-[85vh]">
+                      
+                      {/* Editor Header */}
+                      <div className="px-6 py-4 border-b border-slate-100 flex justify-between items-center bg-slate-50 shrink-0">
+                          <div>
+                              <h3 className="text-lg font-bold text-slate-900 flex items-center gap-2">
+                                  <FileCode className="w-5 h-5 text-indigo-600" />
+                                  Edit File
+                              </h3>
+                              <p className="text-xs text-slate-500 font-mono mt-1">{editor.fileName}</p>
+                          </div>
+                          <button onClick={() => setEditor(prev => ({...prev, isOpen: false}))} disabled={editor.isSaving} className="text-slate-400 hover:text-slate-600"><X className="w-5 h-5" /></button>
+                      </div>
+
+                      {/* Editor Content */}
+                      <div className="flex-1 min-h-0 bg-slate-900 relative">
+                          {editor.isLoading ? (
+                              <div className="absolute inset-0 flex items-center justify-center text-slate-400">
+                                  <Loader2 className="w-8 h-8 animate-spin" />
+                              </div>
+                          ) : (
+                              <textarea 
+                                  value={editor.content}
+                                  onChange={(e) => setEditor(prev => ({ ...prev, content: e.target.value }))}
+                                  className="w-full h-full bg-slate-900 text-emerald-400 font-mono text-sm p-4 focus:outline-none resize-none custom-scrollbar"
+                                  spellCheck={false}
+                              />
+                          )}
+                      </div>
+
+                      {/* Editor Footer */}
+                      <div className="pt-4 pb-4 px-6 flex justify-end gap-3 shrink-0 bg-white border-t border-slate-100">
+                          <button 
+                              onClick={() => setEditor(prev => ({...prev, isOpen: false}))} 
+                              disabled={editor.isSaving}
+                              className="px-4 py-2 text-slate-600 hover:bg-slate-50 rounded-lg font-medium text-sm transition-colors"
+                          >
+                              Cancel
+                          </button>
+                          <button 
+                              onClick={handleSaveFile} 
+                              disabled={editor.isSaving || editor.isLoading}
+                              className="px-6 py-2 bg-indigo-600 text-white rounded-lg font-medium text-sm shadow-sm hover:bg-indigo-700 transition-colors flex items-center gap-2 disabled:opacity-50"
+                          >
+                              {editor.isSaving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
+                              Save Changes
+                          </button>
+                      </div>
+                  </div>
+              </div>
           )}
       </div>
     </Card>

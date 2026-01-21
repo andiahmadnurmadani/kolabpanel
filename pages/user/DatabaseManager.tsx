@@ -1,9 +1,9 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { User, Site, SiteStatus } from '../../types';
 import { api } from '../../services/api';
-import { Database, Server, ExternalLink, Trash2, Link, Table, ChevronDown, ChevronUp, FileSpreadsheet, Plus, X, Loader2, Unlink, AlertTriangle } from 'lucide-react';
-import { MasterCredentials } from '../../components/database/MasterCredentials';
+import { Database, Server, ExternalLink, Trash2, Link, Table, ChevronDown, ChevronUp, FileSpreadsheet, Plus, X, Loader2, Unlink, AlertTriangle, Upload, Download, ArrowDown, Network } from 'lucide-react';
 import { TableViewer } from '../../components/database/TableViewer';
+import { MasterCredentials } from '../../components/database/MasterCredentials';
 
 interface DatabaseManagerProps {
   sites: Site[];
@@ -11,15 +11,15 @@ interface DatabaseManagerProps {
   onRefresh: () => void;
 }
 
-interface MockTable {
+interface RealTable {
     name: string;
     rows: number;
-    size: string;
+    size: string; // e.g. "16.0 KB"
     engine: string;
     collation: string;
 }
 
-// Reuse definitions for Simulation
+// Reuse definitions for Viewer
 interface ColumnDef {
     name: string;
     type: string;
@@ -33,14 +33,7 @@ interface ColumnDef {
 interface TableViewState {
     dbName: string;
     tableName: string;
-    mode: 'BROWSE' | 'STRUCTURE';
-}
-
-interface SimulatedDB {
-    [tableKey: string]: {
-        columns: ColumnDef[];
-        data: any[];
-    };
+    mode: 'BROWSE' | 'STRUCTURE' | 'RELATIONS';
 }
 
 export const DatabaseManager: React.FC<DatabaseManagerProps> = ({ sites, user, onRefresh }) => {
@@ -59,121 +52,108 @@ export const DatabaseManager: React.FC<DatabaseManagerProps> = ({ sites, user, o
     const [dbToDelete, setDbToDelete] = useState<Site | null>(null);
     const [isDeleting, setIsDeleting] = useState(false);
 
+    // Table Data State (Real Data)
+    const [siteTables, setSiteTables] = useState<Record<string, RealTable[]>>({});
+    const [loadingTables, setLoadingTables] = useState<Record<string, boolean>>({});
+
     // Table Viewer State
     const [viewingTable, setViewingTable] = useState<TableViewState | null>(null);
-    const [dbStore, setDbStore] = useState<SimulatedDB>({});
+    const [viewingTableData, setViewingTableData] = useState<{ columns: any[]; data: any[] }>({ columns: [], data: [] });
+    const [loadingTableData, setLoadingTableData] = useState(false);
     
-    // Delete Confirmation for Table Data
-    const [tableDataToDelete, setTableDataToDelete] = useState<(number | string)[] | null>(null);
+    // Import/Export State
+    const [isImporting, setIsImporting] = useState(false);
+    const importFileInputRef = useRef<HTMLInputElement>(null);
+    const [activeImportSiteId, setActiveImportSiteId] = useState<string | null>(null);
 
     const copyToClipboard = (text: string) => {
         navigator.clipboard.writeText(text);
+        alert('Copied to clipboard!');
     };
 
-    // --- SEEDERS & MOCK LOGIC ---
-    const getMockTables = (site: Site): MockTable[] => {
-         return [
-            { name: 'migrations', rows: 3, size: '16 KB', engine: 'InnoDB', collation: 'utf8mb4_unicode_ci' },
-            { name: 'users', rows: 5, size: '48 KB', engine: 'InnoDB', collation: 'utf8mb4_unicode_ci' },
-        ];
-    };
-
-    const seedStructure = (tableName: string): ColumnDef[] => {
-        const commonCols: ColumnDef[] = [
-            { name: 'id', type: 'bigint(20)', collation: '', null: 'NO', key: 'PRI', default: '', extra: 'auto_increment' },
-            { name: 'created_at', type: 'timestamp', collation: '', null: 'YES', key: '', default: 'NULL', extra: '' },
-            { name: 'updated_at', type: 'timestamp', collation: '', null: 'YES', key: '', default: 'NULL', extra: '' },
-        ];
-        if (tableName === 'users') {
-            return [
-                commonCols[0],
-                { name: 'name', type: 'varchar(255)', collation: 'utf8mb4_unicode_ci', null: 'NO', key: '', default: '', extra: '' },
-                { name: 'email', type: 'varchar(255)', collation: 'utf8mb4_unicode_ci', null: 'NO', key: 'UNI', default: '', extra: '' },
-                { name: 'role', type: 'enum("admin","user")', collation: 'utf8mb4_unicode_ci', null: 'NO', key: '', default: 'user', extra: '' },
-                ...commonCols.slice(1)
-            ];
-        } 
-        return [
-            { name: 'id', type: 'int(10) unsigned', collation: '', null: 'NO', key: 'PRI', default: '', extra: 'auto_increment' },
-            { name: 'migration', type: 'varchar(255)', collation: 'utf8mb4_unicode_ci', null: 'NO', key: '', default: '', extra: '' },
-            { name: 'batch', type: 'int(11)', collation: '', null: 'NO', key: '', default: '', extra: '' },
-        ];
-    };
-
-    const seedData = (tableName: string) => {
-        if (tableName === 'users') {
-            return [
-                { id: 1, name: 'Admin User', email: 'admin@example.com', role: 'admin', created_at: '2023-10-01 10:00:00', updated_at: '2023-10-01 10:00:00' },
-                { id: 2, name: 'John Doe', email: 'john@example.com', role: 'user', created_at: '2023-10-02 11:30:00', updated_at: '2023-10-02 11:30:00' },
-                { id: 3, name: 'Jane Smith', email: 'jane@example.com', role: 'user', created_at: '2023-10-05 09:15:00', updated_at: '2023-10-05 09:15:00' },
-            ];
+    // FETCH REAL TABLES
+    const fetchTables = async (siteId: string) => {
+        setLoadingTables(prev => ({ ...prev, [siteId]: true }));
+        try {
+            const tables = await api.database.getTables(siteId);
+            setSiteTables(prev => ({ ...prev, [siteId]: tables }));
+        } catch (e) {
+            console.error("Failed to fetch tables", e);
+            setSiteTables(prev => ({ ...prev, [siteId]: [] })); // Default empty on error
+        } finally {
+            setLoadingTables(prev => ({ ...prev, [siteId]: false }));
         }
-        return [
-            { id: 1, migration: '2014_10_12_000000_create_users_table', batch: 1 },
-            { id: 2, migration: '2019_12_14_000001_create_personal_access_tokens_table', batch: 1 },
-            { id: 3, migration: '2023_01_01_000000_create_posts_table', batch: 2 },
-        ];
     };
 
-    const getTableContext = (dbName: string, tableName: string) => {
-        const key = `${dbName}_${tableName}`;
-        if (dbStore[key]) return dbStore[key];
-        return { columns: seedStructure(tableName), data: seedData(tableName) };
-    };
+    // Auto-fetch when expanding
+    useEffect(() => {
+        if (expandedDb) {
+            fetchTables(expandedDb);
+        }
+    }, [expandedDb]);
 
+    // Fetch table data when viewing table
     useEffect(() => {
         if (viewingTable) {
-            const key = `${viewingTable.dbName}_${viewingTable.tableName}`;
-            if (!dbStore[key]) {
-                setDbStore(prev => ({ ...prev, [key]: getTableContext(viewingTable.dbName, viewingTable.tableName) }));
-            }
+            fetchTableData(viewingTable.tableName);
         }
     }, [viewingTable]);
 
-    const handleSaveTableData = (formData: any, targetIndex: number | null) => {
-        if (!viewingTable) return;
-        const key = `${viewingTable.dbName}_${viewingTable.tableName}`;
-        const currentStore = dbStore[key] || getTableContext(viewingTable.dbName, viewingTable.tableName);
-        
-        if (viewingTable.mode === 'BROWSE') {
-            let newRows = [...currentStore.data];
-            if (targetIndex !== null) {
-                newRows[targetIndex] = { ...newRows[targetIndex], ...formData };
-            } else {
-                const maxId = newRows.reduce((max, r) => (r.id > max ? r.id : max), 0);
-                newRows.push({ ...formData, id: maxId + 1 });
-            }
-            setDbStore(prev => ({ ...prev, [key]: { ...currentStore, data: newRows } }));
-        } else {
-            let newCols = [...currentStore.columns];
-            if (targetIndex !== null) {
-                newCols[targetIndex] = formData as ColumnDef;
-            } else {
-                newCols.push(formData as ColumnDef);
-            }
-            setDbStore(prev => ({ ...prev, [key]: { ...currentStore, columns: newCols } }));
+    const fetchTableData = async (tableName: string) => {
+        if (!expandedDb) return;
+        setLoadingTableData(true);
+        try {
+            const result = await api.database.getTableData(expandedDb, tableName);
+            setViewingTableData(result);
+        } catch (e) {
+            console.error("Failed to fetch table data", e);
+            setViewingTableData({ columns: [], data: [] });
+        } finally {
+            setLoadingTableData(false);
         }
     };
 
-    const initiateDeleteTableData = (ids: (number | string)[]) => {
-        setTableDataToDelete(ids);
+    // --- IMPORT / EXPORT HANDLERS ---
+    const handleExport = async (siteId: string, dbName: string) => {
+        try {
+            const blob = await api.database.export(siteId);
+            const url = window.URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `${dbName}_dump.sql`;
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+            window.URL.revokeObjectURL(url);
+        } catch (e) {
+            alert('Failed to export database.');
+        }
     };
 
-    const confirmDeleteTableData = () => {
-        if (!viewingTable || !tableDataToDelete) return;
-
-        const key = `${viewingTable.dbName}_${viewingTable.tableName}`;
-        const currentStore = dbStore[key];
-
-        if (viewingTable.mode === 'BROWSE') {
-            // IDs here are indices
-            const newRows = currentStore.data.filter((_, i) => !tableDataToDelete.includes(i));
-            setDbStore(prev => ({ ...prev, [key]: { ...currentStore, data: newRows } }));
-        } else {
-            const newCols = currentStore.columns.filter((_, i) => !tableDataToDelete.includes(i));
-            setDbStore(prev => ({ ...prev, [key]: { ...currentStore, columns: newCols } }));
+    const triggerImport = (siteId: string) => {
+        setActiveImportSiteId(siteId);
+        if (importFileInputRef.current) {
+            importFileInputRef.current.value = '';
+            importFileInputRef.current.click();
         }
-        setTableDataToDelete(null);
+    };
+
+    const handleImportFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+        const file = e.target.files?.[0];
+        if (!file || !activeImportSiteId) return;
+
+        setIsImporting(true);
+        try {
+            const result = await api.database.import(activeImportSiteId, file);
+            alert(result.message);
+            // Refresh tables after import
+            fetchTables(activeImportSiteId);
+        } catch (e: any) {
+            alert("Failed to import database: " + e.message);
+        } finally {
+            setIsImporting(false);
+            setActiveImportSiteId(null);
+        }
     };
 
     // --- ACTIONS ---
@@ -181,12 +161,15 @@ export const DatabaseManager: React.FC<DatabaseManagerProps> = ({ sites, user, o
         if (!targetSiteId) return;
         setIsSubmitting(true);
         try {
-            await api.sites.update(targetSiteId, { hasDatabase: true });
+            const targetSite = sites.find(s => s.id === targetSiteId);
+            const dbName = targetSite ? `db_${targetSite.subdomain}` : undefined;
+            await api.database.create(targetSiteId, dbName);
+            alert('Database created successfully! Refreshing...');
             onRefresh();
             setIsCreating(false);
             setTargetSiteId('');
-        } catch (e) {
-            alert("Failed to create database");
+        } catch (e: any) {
+            alert("Failed to create database: " + (e.message || 'Unknown error'));
         } finally {
             setIsSubmitting(false);
         }
@@ -211,7 +194,7 @@ export const DatabaseManager: React.FC<DatabaseManagerProps> = ({ sites, user, o
     };
 
     return (
-        <div className="space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-500 relative">
+        <div className="space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-500 relative pb-20">
             {/* Header & Status */}
             <div className="bg-white rounded-xl p-6 shadow-sm border border-slate-200 flex flex-col md:flex-row items-center justify-between gap-6">
                 <div className="flex items-center gap-5">
@@ -219,26 +202,28 @@ export const DatabaseManager: React.FC<DatabaseManagerProps> = ({ sites, user, o
                         <Server className="w-8 h-8 text-indigo-600" />
                     </div>
                     <div>
-                        <h2 className="text-xl font-bold text-slate-900 mb-1">MySQL Database Server</h2>
-                        <div className="flex items-center gap-4 text-sm text-slate-500">
-                            <span className="flex items-center gap-1.5"><div className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></div> Service Online</span>
+                        <h2 className="text-xl font-bold text-slate-900 mb-1">Web Database Manager</h2>
+                        <p className="text-sm text-slate-500">Manage your schemas, data, and relations directly from this interface.</p>
+                        <div className="flex items-center gap-4 text-xs text-slate-500 mt-2">
+                            <span className="flex items-center gap-1.5"><div className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></div> MySQL 8.0 Online</span>
                             <span>•</span>
-                            <span>Ver 8.0</span>
-                            <span>•</span>
-                            <span className="text-indigo-600 font-medium">sql_{user.username.replace(/[^a-z0-9]/g, '')}</span>
+                            <span className="text-indigo-600 font-medium">System User: sql_{user.username.replace(/[^a-z0-9]/g, '')}</span>
                         </div>
                     </div>
                 </div>
-                <button 
-                    onClick={() => window.open(`${window.location.origin}/phpmyadmin`, '_blank')}
-                    className="py-2 px-4 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg font-medium text-sm transition-colors shadow-sm flex items-center justify-center gap-2"
-                >
-                    <ExternalLink className="w-4 h-4" /> Open phpMyAdmin
-                </button>
             </div>
 
-            {/* Master Credentials */}
+            {/* Master Credentials Component */}
             <MasterCredentials user={user} copyToClipboard={copyToClipboard} />
+
+            {/* Hidden Input for Import */}
+            <input 
+                type="file" 
+                ref={importFileInputRef} 
+                className="hidden" 
+                accept=".sql"
+                onChange={handleImportFileChange} 
+            />
 
             {/* Database List */}
             <div className="space-y-4">
@@ -258,14 +243,14 @@ export const DatabaseManager: React.FC<DatabaseManagerProps> = ({ sites, user, o
                     {dbSites.map((site) => {
                         const dbName = `db_${site.subdomain.replace(/[^a-z0-9]/g, '')}`;
                         const isExpanded = expandedDb === site.id;
-                        const tables = getMockTables(site);
-                        const totalRows = tables.reduce((acc, t) => acc + t.rows, 0);
+                        const tables = siteTables[site.id] || [];
+                        const isLoading = loadingTables[site.id];
                         const isOrphan = site.status === SiteStatus.DB_ONLY;
 
                         return (
                             <div key={site.id} className={`bg-white rounded-xl shadow-sm border transition-all duration-300 overflow-hidden ${isExpanded ? 'border-indigo-200 ring-2 ring-indigo-50 shadow-md' : 'border-slate-200 hover:border-indigo-300'} ${isOrphan ? 'bg-slate-50/50' : ''}`}>
-                                <div className="p-5 flex flex-col md:flex-row justify-between items-center gap-4 cursor-pointer bg-slate-50/30 hover:bg-slate-50 transition-colors" onClick={() => setExpandedDb(isExpanded ? null : site.id)}>
-                                    <div className="flex items-center gap-4 w-full md:w-auto">
+                                <div className="p-5 flex flex-col md:flex-row justify-between items-center gap-4 bg-slate-50/30 hover:bg-slate-50 transition-colors">
+                                    <div className="flex items-center gap-4 w-full md:w-auto cursor-pointer" onClick={() => setExpandedDb(isExpanded ? null : site.id)}>
                                         <div className={`w-12 h-12 rounded-lg flex items-center justify-center border shadow-sm transition-colors ${isExpanded ? 'bg-indigo-600 text-white border-indigo-600' : isOrphan ? 'bg-slate-100 text-slate-400 border-slate-200' : 'bg-white text-indigo-600 border-slate-200'}`}>
                                             <Database className="w-6 h-6" />
                                         </div>
@@ -277,19 +262,44 @@ export const DatabaseManager: React.FC<DatabaseManagerProps> = ({ sites, user, o
                                             </h4>
                                         </div>
                                     </div>
-                                    <div className="flex items-center gap-6 w-full md:w-auto justify-between md:justify-end">
-                                        <div className="hidden md:block text-right">
-                                            <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-0.5">Linked Project</div>
-                                            <div className="font-medium text-slate-700 flex items-center gap-1 justify-end">
-                                                {isOrphan ? (<span className="text-slate-400 flex items-center gap-1 italic"><Unlink className="w-3 h-3" /> None (Deleted)</span>) : (<span className="flex items-center gap-1"><Link className="w-3 h-3" /> {site.name}</span>)}
-                                            </div>
+                                    
+                                    <div className="flex items-center gap-4 w-full md:w-auto justify-between md:justify-end">
+                                        <div className="flex items-center gap-2">
+                                            <button 
+                                                onClick={() => triggerImport(site.id)} 
+                                                disabled={isImporting && activeImportSiteId === site.id}
+                                                className="px-3 py-1.5 text-xs font-medium bg-white border border-slate-200 text-slate-600 hover:text-indigo-600 hover:border-indigo-200 rounded-lg flex items-center gap-1.5 transition-colors shadow-sm"
+                                            >
+                                                {isImporting && activeImportSiteId === site.id ? <Loader2 className="w-3 h-3 animate-spin" /> : <Upload className="w-3 h-3" />}
+                                                Import SQL
+                                            </button>
+                                            <button 
+                                                onClick={() => handleExport(site.id, dbName)}
+                                                className="px-3 py-1.5 text-xs font-medium bg-white border border-slate-200 text-slate-600 hover:text-indigo-600 hover:border-indigo-200 rounded-lg flex items-center gap-1.5 transition-colors shadow-sm"
+                                            >
+                                                <Download className="w-3 h-3" /> Export
+                                            </button>
+                                            <button 
+                                                onClick={() => setViewingTable({ dbName, tableName: '', mode: 'RELATIONS' })}
+                                                className="px-3 py-1.5 text-xs font-medium bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg flex items-center gap-1.5 transition-colors shadow-sm"
+                                            >
+                                                <Network className="w-3 h-3" /> Designer
+                                            </button>
                                         </div>
+
+                                        <div className="w-px h-8 bg-slate-200 hidden md:block"></div>
+
                                         <div className="flex items-center gap-3">
                                             <div className="hidden sm:flex flex-col items-end mr-2">
                                                  <span className="text-xs font-bold text-slate-700">{tables.length} Tables</span>
-                                                 <span className="text-[10px] text-slate-500">~{totalRows} Rows</span>
+                                                 <span className="text-[10px] text-slate-500">
+                                                    {isLoading ? 'Checking...' : tables.length === 0 ? 'Empty' : tables.reduce((acc, t) => acc + t.rows, 0) + ' Rows'}
+                                                 </span>
                                             </div>
-                                            <button className={`p-2 rounded-lg transition-colors border ${isExpanded ? 'bg-indigo-50 text-indigo-600 border-indigo-100' : 'bg-white text-slate-400 border-slate-200'}`}>
+                                            <button 
+                                                onClick={() => setExpandedDb(isExpanded ? null : site.id)}
+                                                className={`p-2 rounded-lg transition-colors border ${isExpanded ? 'bg-indigo-50 text-indigo-600 border-indigo-100' : 'bg-white text-slate-400 border-slate-200'}`}
+                                            >
                                                 {isExpanded ? <ChevronUp className="w-5 h-5" /> : <ChevronDown className="w-5 h-5" />}
                                             </button>
                                         </div>
@@ -300,8 +310,14 @@ export const DatabaseManager: React.FC<DatabaseManagerProps> = ({ sites, user, o
                                         <div className="p-6 bg-slate-50/50">
                                             <div className="flex items-center justify-between mb-4">
                                                 <h5 className="font-bold text-slate-800 flex items-center gap-2"><Table className="w-4 h-4 text-slate-500" /> Database Tables</h5>
-                                                <div className="text-xs text-slate-500 bg-white px-2 py-1 rounded border border-slate-200">Showing {tables.length} tables</div>
+                                                <div className="flex gap-2">
+                                                    <button onClick={() => fetchTables(site.id)} className="text-xs flex items-center gap-1 text-indigo-600 hover:bg-indigo-50 px-2 py-1 rounded">
+                                                        <Loader2 className={`w-3 h-3 ${isLoading ? 'animate-spin' : ''}`} /> Refresh
+                                                    </button>
+                                                    <div className="text-xs text-slate-500 bg-white px-2 py-1 rounded border border-slate-200">Showing {tables.length} tables</div>
+                                                </div>
                                             </div>
+                                            
                                             <div className="bg-white rounded-lg border border-slate-200 overflow-hidden shadow-sm">
                                                 <div className="overflow-x-auto">
                                                     <table className="min-w-full text-left text-sm">
@@ -316,22 +332,37 @@ export const DatabaseManager: React.FC<DatabaseManagerProps> = ({ sites, user, o
                                                             </tr>
                                                         </thead>
                                                         <tbody className="divide-y divide-slate-100">
-                                                            {tables.map((t, i) => (
-                                                                <tr key={i} className="hover:bg-indigo-50/30 transition-colors group">
-                                                                    <td className="px-4 py-3 font-medium text-slate-700 flex items-center gap-2"><FileSpreadsheet className="w-4 h-4 text-slate-400 group-hover:text-indigo-500" /> {t.name}</td>
-                                                                    <td className="px-4 py-3 text-slate-600">{t.rows.toLocaleString()}</td>
-                                                                    <td className="px-4 py-3 text-slate-600 font-mono text-xs">{t.size}</td>
-                                                                    <td className="px-4 py-3 text-slate-500 text-xs">{t.engine}</td>
-                                                                    <td className="px-4 py-3 text-slate-500 text-xs">{t.collation}</td>
-                                                                    <td className="px-4 py-3 text-right">
-                                                                        <div className="flex justify-end gap-2 opacity-50 group-hover:opacity-100 transition-opacity">
-                                                                            <button onClick={() => setViewingTable({ dbName, tableName: t.name, mode: 'BROWSE' })} className="text-xs text-indigo-600 hover:underline hover:text-indigo-800 font-medium">Browse</button>
-                                                                            <span className="text-slate-300">|</span>
-                                                                            <button onClick={() => setViewingTable({ dbName, tableName: t.name, mode: 'STRUCTURE' })} className="text-xs text-indigo-600 hover:underline hover:text-indigo-800 font-medium">Structure</button>
-                                                                        </div>
+                                                            {isLoading ? (
+                                                                <tr>
+                                                                    <td colSpan={6} className="px-4 py-8 text-center text-slate-500 italic bg-slate-50/50">
+                                                                        <Loader2 className="w-5 h-5 animate-spin mx-auto mb-2" />
+                                                                        Fetching tables from MySQL...
                                                                     </td>
                                                                 </tr>
-                                                            ))}
+                                                            ) : tables.length === 0 ? (
+                                                                <tr>
+                                                                    <td colSpan={6} className="px-4 py-8 text-center text-slate-500 italic bg-slate-50/50">
+                                                                        No tables found. Import a .sql file to get started.
+                                                                    </td>
+                                                                </tr>
+                                                            ) : (
+                                                                tables.map((t, i) => (
+                                                                    <tr key={i} className="hover:bg-indigo-50/30 transition-colors group">
+                                                                        <td className="px-4 py-3 font-medium text-slate-700 flex items-center gap-2"><FileSpreadsheet className="w-4 h-4 text-slate-400 group-hover:text-indigo-500" /> {t.name}</td>
+                                                                        <td className="px-4 py-3 text-slate-600">{t.rows}</td>
+                                                                        <td className="px-4 py-3 text-slate-600 font-mono text-xs">{t.size}</td>
+                                                                        <td className="px-4 py-3 text-slate-500 text-xs">{t.engine}</td>
+                                                                        <td className="px-4 py-3 text-slate-500 text-xs">{t.collation}</td>
+                                                                        <td className="px-4 py-3 text-right">
+                                                                            <div className="flex justify-end gap-2 opacity-50 group-hover:opacity-100 transition-opacity">
+                                                                                <button onClick={() => setViewingTable({ dbName, tableName: t.name, mode: 'BROWSE' })} className="text-xs text-indigo-600 hover:underline hover:text-indigo-800 font-medium">Browse</button>
+                                                                                <span className="text-slate-300">|</span>
+                                                                                <button onClick={() => setViewingTable({ dbName, tableName: t.name, mode: 'STRUCTURE' })} className="text-xs text-indigo-600 hover:underline hover:text-indigo-800 font-medium">Structure</button>
+                                                                            </div>
+                                                                        </td>
+                                                                    </tr>
+                                                                ))
+                                                            )}
                                                         </tbody>
                                                     </table>
                                                 </div>
@@ -422,39 +453,15 @@ export const DatabaseManager: React.FC<DatabaseManagerProps> = ({ sites, user, o
                 </div>
             )}
 
-            {/* Table Data Delete Confirmation Modal */}
-            {tableDataToDelete && (
-                <div className="fixed inset-0 z-[80] flex items-center justify-center p-4">
-                    <div className="absolute inset-0 bg-slate-900/60 backdrop-blur-sm transition-opacity" onClick={() => setTableDataToDelete(null)} />
-                    <div className="relative w-full max-w-sm bg-white rounded-xl shadow-2xl p-6 animate-in fade-in zoom-in-95 duration-200">
-                        <div className="flex items-start gap-4">
-                            <div className="p-3 bg-red-100 rounded-full shrink-0"><AlertTriangle className="w-6 h-6 text-red-600" /></div>
-                            <div>
-                                <h3 className="text-lg font-bold text-slate-900">Delete Data?</h3>
-                                <p className="text-sm text-slate-500 mt-1">
-                                    Are you sure you want to delete {tableDataToDelete.length} {viewingTable?.mode === 'BROWSE' ? 'row(s)' : 'column(s)'}?
-                                </p>
-                                <div className="mt-2 text-xs text-red-600 bg-red-50 p-2 rounded border border-red-100 flex items-center gap-2">
-                                    This action cannot be undone.
-                                </div>
-                            </div>
-                        </div>
-                        <div className="mt-6 flex justify-end gap-3">
-                            <button onClick={() => setTableDataToDelete(null)} className="px-4 py-2 text-slate-600 hover:bg-slate-50 rounded-lg font-medium text-sm transition-colors">Cancel</button>
-                            <button onClick={confirmDeleteTableData} className="px-4 py-2 bg-red-600 text-white rounded-lg font-medium text-sm hover:bg-red-700 shadow-sm transition-colors flex items-center gap-2"><Trash2 className="w-4 h-4" /> Delete</button>
-                        </div>
-                    </div>
-                </div>
-            )}
-
+            {/* Viewer Component */}
             {viewingTable && (
                 <TableViewer 
                     viewingTable={viewingTable}
-                    data={dbStore[`${viewingTable.dbName}_${viewingTable.tableName}`] || getTableContext(viewingTable.dbName, viewingTable.tableName)}
+                    data={viewingTableData}
                     onClose={() => setViewingTable(null)}
-                    onSave={handleSaveTableData}
-                    onDelete={initiateDeleteTableData}
-                    onRefresh={() => {}}
+                    onSave={() => {}}
+                    onDelete={() => {}}
+                    onRefresh={() => fetchTableData(viewingTable.tableName)}
                     switchMode={(mode) => setViewingTable({...viewingTable, mode})}
                 />
             )}
